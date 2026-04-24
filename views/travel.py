@@ -2,6 +2,7 @@
 
 from datetime import date
 import pandas as pd
+import requests as _requests
 import streamlit as st
 
 from utils.gemini_helper import stream_destination_response
@@ -9,6 +10,31 @@ from views._shared import (
     cached_itinerary, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_image(url: str) -> bytes | None:
+    """
+    Fetch image bytes from Supabase Storage server-side.
+    Results are cached for 5 min so each image is fetched at most once per session.
+    """
+    print(f"[travel] _fetch_image: GET {url}", flush=True)
+    try:
+        r = _requests.get(url, timeout=10)
+        print(
+            f"[travel] _fetch_image: HTTP {r.status_code} "
+            f"content-type={r.headers.get('content-type', '?')} "
+            f"bytes={len(r.content)}",
+            flush=True,
+        )
+        if r.ok:
+            return r.content
+        print(f"[travel] _fetch_image: FAILED — bucket may not be public. "
+              f"Response: {r.text[:200]!r}", flush=True)
+        return None
+    except Exception as exc:
+        print(f"[travel] _fetch_image: exception: {exc}", flush=True)
+        return None
 
 
 def _entry_context(entry) -> str:
@@ -108,6 +134,7 @@ def _entry_card(entry: pd.Series) -> None:
     maps_url  = str(entry.get("maps_url", "")).strip()
     t_start   = str(entry.get("time_start", "")).strip()
     t_end     = str(entry.get("time_end", "")).strip()
+    image_url = str(entry.get("image_url", "") or "").strip()
 
     if icon not in DESTINATION_ICONS:
         icon = "location_on"
@@ -116,48 +143,70 @@ def _entry_card(entry: pd.Series) -> None:
     maps_link = maps_url or f"https://maps.google.com/?q={entry['destination'].replace(' ', '+')}"
 
     with st.container(border=True):
-        # Header: name → Maps → Gemini (Gemini on the right)
-        with st.container(horizontal=True, horizontal_alignment="left",
-                          vertical_alignment="center", gap="xsmall"):
-            st.subheader(f":material/{icon}: {entry['destination']}", anchor=False)
-            st.link_button(
-                "",
-                maps_link,
-                icon=":material/location_on:",
-                type="tertiary",
-                help="Open in Google Maps",
+        # Header row: title left, buttons pinned to far right
+        col_title, col_btns = st.columns([5, 1])
+        with col_title:
+            st.markdown(f"##### :material/{icon}: {entry['destination']}")
+        with col_btns:
+            with st.container(horizontal=True, horizontal_alignment="right", gap="xsmall"):
+                st.link_button(
+                    "",
+                    maps_link,
+                    icon=":material/location_on:",
+                    type="tertiary",
+                    help="Open in Google Maps",
+                )
+                if st.button(
+                    "",
+                    icon=":material/auto_awesome:",
+                    type="primary",
+                    key=f"gem_btn_{eid}",
+                    help="Ask Gemini about this destination",
+                ):
+                    _gemini_dialog(entry)
+
+        # Body: image column (left) + content column (right)
+        has_image = image_url and image_url.startswith("http")
+        img_bytes = None
+        if has_image:
+            print(
+                f"[travel] _entry_card: showing image for "
+                f"{entry.get('destination', '?')!r} url={image_url[:80]}",
+                flush=True,
             )
-            if st.button(
-                "",
-                icon=":material/auto_awesome:",
-                type="primary",
-                key=f"gem_btn_{eid}",
-                help="Ask Gemini about this destination",
-            ):
-                _gemini_dialog(entry)
+            img_bytes = _fetch_image(image_url)
+            if not img_bytes:
+                print("[travel] image unavailable — showing content only", flush=True)
 
-        if time_str:
-            st.caption(f":material/schedule: {time_str}")
+        # Horizontal row: fixed-size image on the left, content on the right.
+        # st.container(horizontal=True) stays side-by-side even on mobile.
+        with st.container(horizontal=True, gap="medium", vertical_alignment="top"):
+            if img_bytes:
+                st.image(img_bytes, width=110)
 
-        if entry.get("description"):
-            st.write(entry["description"])
+            with st.container():
+                if time_str:
+                    st.caption(f":material/schedule: {time_str}")
 
-        bits = []
-        if price_str:
-            bits.append(f":material/payments: {price_str}")
-        if accom:
-            bits.append(f":material/hotel: {accom}")
-        if bits:
-            st.caption("  ·  ".join(bits))
+                if entry.get("description"):
+                    st.write(entry["description"])
 
-        if links:
-            for raw in [l.strip() for l in links.split(",") if l.strip()]:
-                label, url = parse_link(raw)
-                st.link_button(label, url, icon=":material/link:", use_container_width=True)
+                bits = []
+                if price_str:
+                    bits.append(f":material/payments: {price_str}")
+                if accom:
+                    bits.append(f":material/hotel: {accom}")
+                if bits:
+                    st.caption("  ·  ".join(bits))
 
-        if extra:
-            with st.expander("More info", icon=":material/info:"):
-                st.write(extra)
+                if links:
+                    for raw in [l.strip() for l in links.split(",") if l.strip()]:
+                        label, url = parse_link(raw)
+                        st.link_button(label, url, icon=":material/link:", use_container_width=True)
+
+                if extra:
+                    with st.expander("More info", icon=":material/info:"):
+                        st.write(extra)
 
 
 
@@ -196,7 +245,7 @@ def render() -> None:
             st.session_state[toast_key] = True
         today = trip_start if today < trip_start else trip_end
 
-    itin_df = cached_itinerary(str(trip_row["sheet_tab"]))
+    itin_df = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 
@@ -235,6 +284,17 @@ def render() -> None:
     if today_entries.empty:
         st.info(f"No entries for {chosen}.", icon=":material/inbox:")
         return
+
+    # Show refresh button when any illustration is generating or when entries have a
+    # prompt but the cached data may not yet reflect the completed image_url
+    has_pending = any(
+        str(e.get("image_url", "")) in ("generating", "") and str(e.get("image_prompt", "")).strip()
+        for _, e in today_entries.iterrows()
+    )
+    if has_pending:
+        if st.button("↻ Refresh illustrations", icon=":material/refresh:", type="tertiary"):
+            st.cache_data.clear()
+            st.rerun()
 
     entries_list = list(today_entries.iterrows())
     for i, (_, entry) in enumerate(entries_list):

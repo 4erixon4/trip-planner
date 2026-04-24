@@ -193,7 +193,7 @@ def render() -> None:
 
     trip_id = str(trip_row["trip_id"])
 
-    itin_df = cached_itinerary(str(trip_row["sheet_tab"]))
+    itin_df = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
     _, entries_df = split_itinerary(itin_df)
     exp_df = _cached_expenses(trip_id)
 

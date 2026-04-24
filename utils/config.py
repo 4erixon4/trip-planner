@@ -20,6 +20,14 @@ class _Cfg:
         return st.secrets["google_sheets"]["service_account_json"]
 
     @property
+    def supabase_url(self) -> str:
+        return st.secrets["database"]["url"]
+
+    @property
+    def supabase_key(self) -> str:
+        return st.secrets["database"]["key"]
+
+    @property
     def gemini_api_key(self) -> str:
         return st.secrets["gemini"]["api_key"]
 

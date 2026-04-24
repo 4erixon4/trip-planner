@@ -43,8 +43,8 @@ def cached_trips() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def cached_itinerary(tab_name: str) -> pd.DataFrame:
-    fake_row = pd.Series({"sheet_tab": tab_name})
+def cached_itinerary(trip_id: str, sheet_tab: str = "") -> pd.DataFrame:
+    fake_row = pd.Series({"trip_id": trip_id, "sheet_tab": sheet_tab})
     return get_itinerary(fake_row)
 
 

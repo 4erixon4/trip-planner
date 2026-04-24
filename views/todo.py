@@ -9,6 +9,8 @@ from views._shared import trip_picker, parse_link
 
 PRIORITIES = ["Normal", "Medium", "High"]
 
+_PRIORITY_ORDER = {"High": 0, "Medium": 1, "Normal": 2}
+
 
 @st.cache_data(ttl=15, show_spinner=False)
 def _cached_tasks(trip_id: str) -> pd.DataFrame:
@@ -18,10 +20,10 @@ def _cached_tasks(trip_id: str) -> pd.DataFrame:
 def _priority_label(desc: str, priority: str) -> str:
     """Return markdown-colored label for a task checkbox."""
     if priority == "High":
-        return f":red[**{desc}**]"
+        return f"🔴 :red[**{desc}**]"
     if priority == "Medium":
-        return f":orange[**{desc}**]"
-    return f"**{desc}**"
+        return f"🟡 :orange[**{desc}**]"
+    return f"⚪ {desc}"
 
 
 def _add_task_form(trip_id: str, assignees: list[str]) -> None:
@@ -90,12 +92,20 @@ def render() -> None:
         st.info("No tasks yet — add one above.", icon=":material/info:")
         return
 
-    # All tasks sorted by assignee (current user first, then alphabetical)
+    # Sort: priority first (High → Medium → Normal), then me-first, then alphabetical
     tasks_df = tasks_df.copy()
-    tasks_df["_sort"] = tasks_df["assigned_to"].apply(
+    tasks_df["_sort_p"] = tasks_df["priority"].apply(
+        lambda p: _PRIORITY_ORDER.get(str(p).strip(), 2)
+    )
+    tasks_df["_sort_a"] = tasks_df["assigned_to"].apply(
         lambda a: ("0" if str(a) == me else "1") + str(a).lower()
     )
-    tasks_df = tasks_df.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
+    tasks_df = (
+        tasks_df
+        .sort_values(["_sort_p", "_sort_a"])
+        .drop(columns=["_sort_p", "_sort_a"])
+        .reset_index(drop=True)
+    )
 
     for _, task in tasks_df.iterrows():
         task_id  = str(task.get("task_id", ""))

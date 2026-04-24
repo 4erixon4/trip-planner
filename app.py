@@ -5,7 +5,8 @@ Trip Planner — native Streamlit, sidebar navigation, Material icons.
 import streamlit as st
 
 from utils.auth import require_auth
-from utils.sheets import ensure_sheets_exist
+from utils.sheets import ensure_sheets_exist, _sb
+from utils.images import ensure_bucket_public
 from views import build, travel, expenses, todo
 
 st.set_page_config(
@@ -20,6 +21,16 @@ user = require_auth()
 
 # ── Sheets bootstrap (creates "Trips" worksheet if needed) ──────────────────
 ensure_sheets_exist()
+
+# ── Supabase connectivity check ──────────────────────────────────────────────
+try:
+    _sb().table("trips").select("trip_id").limit(1).execute()
+except Exception as _sb_err:
+    st.error(f"**Supabase connection failed:** {_sb_err}")
+    st.stop()
+
+# ── Storage bucket: ensure public access ─────────────────────────────────────
+ensure_bucket_public()
 
 # ── Sidebar: greeting + logout + navigation ──────────────────────────────────
 with st.sidebar:

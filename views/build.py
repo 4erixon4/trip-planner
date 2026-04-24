@@ -9,6 +9,10 @@ from utils.sheets import (
     add_itinerary_entry, update_itinerary_entry, delete_itinerary_entry,
     set_day_title,
 )
+from utils.images import (
+    trigger_async_generation, delete_image, regenerate_sync,
+    is_real_url, is_generating, is_failed,
+)
 
 from views._shared import (
     cached_trips, cached_itinerary, trip_day_number, format_price, parse_link,
@@ -131,6 +135,12 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
         links = st.text_input("Links", placeholder="Label | https://... , Label2 | https://...")
         extra = st.text_area("Additional info", height=70)
 
+        img_prompt = st.text_input(
+            "Illustration prompt (optional)",
+            placeholder="e.g. driving from Zion to Page",
+            help="A short sentence; Nano Banana will generate a tiny cartoon for this card.",
+        )
+
         s, c = st.columns(2)
         with s:
             saved = st.form_submit_button("Save entry", icon=":material/save:", use_container_width=True)
@@ -142,7 +152,6 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
                 st.error("Destination is required.")
             else:
                 day_num = trip_day_number(trip_start, entry_date)
-                # Auto-assign order: append to end of the day (existing count + 1) × 10
                 date_str = str(entry_date)
                 existing_day = existing_df[existing_df["date"] == date_str] if not existing_df.empty else pd.DataFrame()
                 auto_order = (len(existing_day) + 1) * 10
@@ -162,9 +171,18 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
                     time_start=time_start.strip(),
                     time_end=time_end.strip(),
                     order=auto_order,
+                    image_prompt=img_prompt.strip(),
                 )
                 if eid:
-                    st.success("Entry added.")
+                    if img_prompt.strip():
+                        trigger_async_generation(
+                            entry_id=eid,
+                            user_prompt=img_prompt.strip(),
+                        )
+                        st.toast("Entry added — illustration generating in background…",
+                                 icon=":material/auto_awesome:")
+                    else:
+                        st.toast("Entry added.", icon=":material/check:")
                     st.session_state["adding_entry"] = False
                     st.cache_data.clear()
                     st.rerun()
@@ -189,22 +207,25 @@ def _entry_card(
     maps_url  = str(entry.get("maps_url", "")).strip()
     t_start   = str(entry.get("time_start", "")).strip()
     t_end     = str(entry.get("time_end", "")).strip()
+    img_url   = str(entry.get("image_url", "") or "").strip()
     n         = len(day_entries)
 
     time_str  = (f"{t_start}-{t_end}" if t_end else t_start) if t_start else ""
     maps_link = maps_url or f"https://maps.google.com/?q={entry['destination'].replace(' ', '+')}"
 
     with st.container(border=True):
-        # Header: name then maps button, left-aligned
-        with st.container(horizontal=True, horizontal_alignment="left",
-                          vertical_alignment="center", gap="xsmall"):
-            st.subheader(f":material/{icon}: {entry['destination']}", anchor=False)
-            st.link_button(
-                "", maps_link,
-                icon=":material/location_on:",
-                type="tertiary",
-                help="Open in Google Maps",
-            )
+        # Header: title left, maps button pinned to far right
+        col_title, col_btn = st.columns([5, 1])
+        with col_title:
+            st.markdown(f"##### :material/{icon}: {entry['destination']}")
+        with col_btn:
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                st.link_button(
+                    "", maps_link,
+                    icon=":material/location_on:",
+                    type="tertiary",
+                    help="Open in Google Maps",
+                )
 
         if time_str:
             st.caption(f":material/schedule: {time_str}")
@@ -246,6 +267,15 @@ def _entry_card(
                 if delete_itinerary_entry(trip_row, eid):
                     st.cache_data.clear()
                     st.rerun()
+
+        # ── Illustration status ───────────────────────────────────────────────
+        if is_generating(img_url):
+            st.info(":material/auto_awesome: Illustration generating… refresh in ~30s",
+                    icon=":material/hourglass_top:")
+        elif is_failed(img_url):
+            st.error(f":material/broken_image: Illustration failed — {img_url[7:]}")
+        elif is_real_url(img_url):
+            st.caption(":material/image: Illustration ready ✓")
 
         if st.session_state.get(f"editing_{eid}", False):
             _edit_entry_form(trip_row, entry)
@@ -291,6 +321,23 @@ def _edit_entry_form(trip_row, entry) -> None:
                                    placeholder="Label | https://... , Label2 | https://...")
         upd_extra = st.text_area("Additional info", value=str(entry.get("additional_info", "")), height=70)
 
+        cur_img_url = str(entry.get("image_url", "") or "").strip()
+        cur_img_prompt = str(entry.get("image_prompt", "") or "")
+
+        upd_img_prompt = st.text_input(
+            "Illustration prompt",
+            value=cur_img_prompt,
+            placeholder="e.g. driving from Zion to Page",
+            help="Clear this field and save to DELETE the current illustration. "
+                 "Change it and tick Regenerate to create a new one.",
+        )
+        regen = st.checkbox(
+            "Regenerate illustration now",
+            value=False,
+            key=f"regen_{eid}",
+            disabled=not upd_img_prompt.strip(),
+        )
+
         s, c = st.columns(2)
         with s:
             save = st.form_submit_button("Save", icon=":material/save:", use_container_width=True)
@@ -298,6 +345,17 @@ def _edit_entry_form(trip_row, entry) -> None:
             cancel = st.form_submit_button("Cancel", icon=":material/close:", use_container_width=True)
 
         if save:
+            new_prompt = upd_img_prompt.strip()
+
+            # Cleared prompt → delete existing image from bucket + DB
+            if not new_prompt and cur_img_url:
+                delete_image(cur_img_url)
+                update_itinerary_entry(trip_row, eid, image_url="", image_prompt="")
+                st.toast("Illustration removed.", icon=":material/check:")
+                st.session_state[f"editing_{eid}"] = False
+                st.cache_data.clear()
+                st.rerun()
+
             if update_itinerary_entry(
                 trip_row, eid,
                 destination=upd_dest, description=upd_desc,
@@ -309,7 +367,15 @@ def _edit_entry_form(trip_row, entry) -> None:
                 time_start=upd_ts.strip(),
                 time_end=upd_te.strip(),
                 order=int(upd_order),
+                image_prompt=new_prompt,
             ):
+                if regen and new_prompt:
+                    with st.spinner("Generating illustration…"):
+                        regenerate_sync(eid, new_prompt)
+                elif new_prompt and not cur_img_url and not regen:
+                    # Prompt was just added for first time but regen not checked
+                    trigger_async_generation(eid, new_prompt)
+                    st.toast("Illustration queued…", icon=":material/auto_awesome:")
                 st.session_state[f"editing_{eid}"] = False
                 st.cache_data.clear()
                 st.rerun()
@@ -358,7 +424,7 @@ def render() -> None:
     if st.button("Add destination", icon=":material/add_location:", use_container_width=True, key="open_add_entry"):
         st.session_state["adding_entry"] = not st.session_state.get("adding_entry", False)
 
-    itin_df = cached_itinerary(str(trip_row["sheet_tab"]))
+    itin_df = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 
