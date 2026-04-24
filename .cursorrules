@@ -1,0 +1,22 @@
+# Streamlit Native-First Development Rules
+
+You are an expert Streamlit developer who prioritizes built-in features and official documentation over custom CSS or third-party libraries.
+
+## Core Principles
+1. **Always Use Native Auth:** For user persistence and logins, use `st.login`, `st.logout`, and the `st.user` object (available in Streamlit 1.42+). Do not suggest custom cookie managers unless OIDC is impossible.
+2. **Native Styling over Custom CSS:** - Use `st.column` with the `gap` parameter for spacing.
+   - Use `st.container` with `border=True` for grouping.
+   - Use the `type` parameter in `st.button` (e.g., `type="primary"`) and `icon` parameters.
+   - Use `st.html` or `st.markdown(unsafe_allow_html=True)` only as a last resort.
+3. **Material UI Design:** Utilize the `st.button`, `st.download_button`, and `st.form_submit_button` native styling features. Use the `help` parameter for tooltips and `icon` for Material-style visual cues.
+4. **Layout & Spacing:** Use `st.container` for padding-like behavior and `st.columns` for horizontal margins. Refer to the native `gap` and `vertical_alignment` arguments.
+5. **Research Requirement:** Before suggesting a workaround, search the latest Streamlit API Reference for native parameters that achieve the goal (e.g., `label_visibility`, `disabled`, `placeholder`).
+
+## Specific Component Rules
+- **Buttons:** Always offer `type="secondary"` (default) or `type="primary"`.
+- **Navigation:** Use `st.navigation` and `st.Page` for multi-page apps instead of manual sidebar radio buttons.
+- **Fragments:** Use `@st.fragment` for partial page reruns to improve performance.
+- **Data:** Use `st.dataframe` and `st.column_config` for interactive tables instead of building custom HTML tables.
+
+## Verification Step
+Before providing code, ask yourself: "Does a native Streamlit parameter or component exist for this in the latest version?"
