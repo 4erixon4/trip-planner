@@ -10,5 +10,8 @@ headless            = true
 enableCORS          = true
 enableXsrfProtection = true
 
+[logger]
+level = "error"
+
 [browser]
 gatherUsageStats    = false

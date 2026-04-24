@@ -1,5 +1,6 @@
 """Travel page — auto-detects today's trip day and shows its entries."""
 
+import base64
 from datetime import date
 import pandas as pd
 import requests as _requests
@@ -18,22 +19,10 @@ def _fetch_image(url: str) -> bytes | None:
     Fetch image bytes from Supabase Storage server-side.
     Results are cached for 5 min so each image is fetched at most once per session.
     """
-    print(f"[travel] _fetch_image: GET {url}", flush=True)
     try:
         r = _requests.get(url, timeout=10)
-        print(
-            f"[travel] _fetch_image: HTTP {r.status_code} "
-            f"content-type={r.headers.get('content-type', '?')} "
-            f"bytes={len(r.content)}",
-            flush=True,
-        )
-        if r.ok:
-            return r.content
-        print(f"[travel] _fetch_image: FAILED — bucket may not be public. "
-              f"Response: {r.text[:200]!r}", flush=True)
-        return None
-    except Exception as exc:
-        print(f"[travel] _fetch_image: exception: {exc}", flush=True)
+        return r.content if r.ok else None
+    except Exception:
         return None
 
 
@@ -142,12 +131,35 @@ def _entry_card(entry: pd.Series) -> None:
     time_str  = (f"{t_start}-{t_end}" if t_end else t_start) if t_start else ""
     maps_link = maps_url or f"https://maps.google.com/?q={entry['destination'].replace(' ', '+')}"
 
+    # Fetch image early so we can decide how to render the header
+    img_bytes = None
+    if image_url and image_url.startswith("http"):
+        img_bytes = _fetch_image(image_url)
+
     with st.container(border=True):
-        # Header row: title left, buttons pinned to far right
-        col_title, col_btns = st.columns([5, 1])
-        with col_title:
-            st.markdown(f"##### :material/{icon}: {entry['destination']}")
-        with col_btns:
+        # Header row: thumbnail OR material icon · title · action buttons
+        # Header: single HTML element for image+title (avoids nested horizontal containers
+        # fighting each other on mobile), buttons pushed to the right via distribute.
+        with st.container(
+            horizontal=True,
+            vertical_alignment="center",
+            horizontal_alignment="distribute",
+        ):
+            # Left: image (inline) + title as one markdown block
+            if img_bytes:
+                b64 = base64.b64encode(img_bytes).decode()
+                st.markdown(
+                    f'<span style="display:inline-flex;align-items:center;gap:10px;">'
+                    f'<img src="data:image/jpeg;base64,{b64}" '
+                    f'style="width:44px;height:44px;object-fit:cover;border-radius:10px;flex-shrink:0;">'
+                    f'<strong>{entry["destination"]}</strong>'
+                    f'</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"##### :material/{icon}: {entry['destination']}")
+
+            # Right: action buttons pinned to far right
             with st.container(horizontal=True, horizontal_alignment="right", gap="xsmall"):
                 st.link_button(
                     "",
@@ -165,48 +177,29 @@ def _entry_card(entry: pd.Series) -> None:
                 ):
                     _gemini_dialog(entry)
 
-        # Body: image column (left) + content column (right)
-        has_image = image_url and image_url.startswith("http")
-        img_bytes = None
-        if has_image:
-            print(
-                f"[travel] _entry_card: showing image for "
-                f"{entry.get('destination', '?')!r} url={image_url[:80]}",
-                flush=True,
-            )
-            img_bytes = _fetch_image(image_url)
-            if not img_bytes:
-                print("[travel] image unavailable — showing content only", flush=True)
+        # Body content
+        if time_str:
+            st.caption(f":material/schedule: {time_str}")
 
-        # Horizontal row: fixed-size image on the left, content on the right.
-        # st.container(horizontal=True) stays side-by-side even on mobile.
-        with st.container(horizontal=True, gap="medium", vertical_alignment="top"):
-            if img_bytes:
-                st.image(img_bytes, width=110)
+        if entry.get("description"):
+            st.write(entry["description"])
 
-            with st.container():
-                if time_str:
-                    st.caption(f":material/schedule: {time_str}")
+        bits = []
+        if price_str:
+            bits.append(f":material/payments: {price_str}")
+        if accom:
+            bits.append(f":material/hotel: {accom}")
+        if bits:
+            st.caption("  ·  ".join(bits))
 
-                if entry.get("description"):
-                    st.write(entry["description"])
+        if links:
+            for raw in [l.strip() for l in links.split(",") if l.strip()]:
+                label, url = parse_link(raw)
+                st.link_button(label, url, icon=":material/link:", use_container_width=True)
 
-                bits = []
-                if price_str:
-                    bits.append(f":material/payments: {price_str}")
-                if accom:
-                    bits.append(f":material/hotel: {accom}")
-                if bits:
-                    st.caption("  ·  ".join(bits))
-
-                if links:
-                    for raw in [l.strip() for l in links.split(",") if l.strip()]:
-                        label, url = parse_link(raw)
-                        st.link_button(label, url, icon=":material/link:", use_container_width=True)
-
-                if extra:
-                    with st.expander("More info", icon=":material/info:"):
-                        st.write(extra)
+        if extra:
+            with st.expander("More info", icon=":material/info:"):
+                st.write(extra)
 
 
 
