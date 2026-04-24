@@ -152,7 +152,7 @@ def _entry_card(entry: pd.Series) -> None:
                     f'<span style="display:inline-flex;align-items:center;gap:10px;">'
                     f'<img src="data:image/jpeg;base64,{b64}" '
                     f'style="width:44px;height:44px;object-fit:cover;border-radius:10px;flex-shrink:0;">'
-                    f'<strong>{entry["destination"]}</strong>'
+                    f'<strong style="white-space:nowrap;">{entry["destination"]}</strong>'
                     f'</span>',
                     unsafe_allow_html=True,
                 )

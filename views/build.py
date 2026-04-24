@@ -214,18 +214,19 @@ def _entry_card(
     maps_link = maps_url or f"https://maps.google.com/?q={entry['destination'].replace(' ', '+')}"
 
     with st.container(border=True):
-        # Header: title left, maps button pinned to far right
-        col_title, col_btn = st.columns([5, 1])
-        with col_title:
+        # Header: stays on one row on mobile via horizontal container (columns stack)
+        with st.container(
+            horizontal=True,
+            vertical_alignment="center",
+            horizontal_alignment="distribute",
+        ):
             st.markdown(f"##### :material/{icon}: {entry['destination']}")
-        with col_btn:
-            with st.container(horizontal=True, horizontal_alignment="right"):
-                st.link_button(
-                    "", maps_link,
-                    icon=":material/location_on:",
-                    type="tertiary",
-                    help="Open in Google Maps",
-                )
+            st.link_button(
+                "", maps_link,
+                icon=":material/location_on:",
+                type="tertiary",
+                help="Open in Google Maps",
+            )
 
         if time_str:
             st.caption(f":material/schedule: {time_str}")
