@@ -19,18 +19,22 @@ st.set_page_config(
 # ── Auth (persists across refreshes via st.user) ────────────────────────────
 user = require_auth()
 
-# ── Sheets bootstrap (creates "Trips" worksheet if needed) ──────────────────
-ensure_sheets_exist()
+# ── One-time startup tasks (cached per process — not re-run on every rerun) ──
+@st.cache_resource(show_spinner=False)
+def _startup() -> str | None:
+    """Returns an error string on failure, or None on success."""
+    ensure_sheets_exist()
+    try:
+        _sb().table("trips").select("trip_id").limit(1).execute()
+    except Exception as exc:
+        return str(exc)
+    ensure_bucket_public()
+    return None
 
-# ── Supabase connectivity check ──────────────────────────────────────────────
-try:
-    _sb().table("trips").select("trip_id").limit(1).execute()
-except Exception as _sb_err:
-    st.error(f"**Supabase connection failed:** {_sb_err}")
+_startup_err = _startup()
+if _startup_err:
+    st.error(f"**Supabase connection failed:** {_startup_err}")
     st.stop()
-
-# ── Storage bucket: ensure public access ─────────────────────────────────────
-ensure_bucket_public()
 
 # ── Sidebar: greeting + logout + navigation ──────────────────────────────────
 with st.sidebar:
@@ -46,13 +50,17 @@ with st.sidebar:
     st.divider()
 
 # ── Multi-page navigation (sidebar) ─────────────────────────────────────────
+_todo_page     = st.Page(todo.render,     title="To Do",    icon=":material/checklist:",    url_path="todo")
+_build_page    = st.Page(build.render,    title="Build",    icon=":material/edit_note:",    url_path="build",    default=True)
+_travel_page   = st.Page(travel.render,   title="Travel",   icon=":material/explore:",      url_path="travel")
+_expenses_page = st.Page(expenses.render, title="Expenses", icon=":material/receipt_long:", url_path="expenses")
+
 pg = st.navigation(
-    [
-        st.Page(build.render,    title="Build",    icon=":material/edit_note:",    url_path="build",    default=True),
-        st.Page(travel.render,   title="Travel",   icon=":material/explore:",      url_path="travel"),
-        st.Page(expenses.render, title="Expenses", icon=":material/receipt_long:", url_path="expenses"),
-        st.Page(todo.render,     title="To Do",    icon=":material/checklist:",    url_path="todo"),
-    ],
+    [_build_page, _travel_page, _expenses_page, _todo_page],
     position="sidebar",
 )
+
+if st.session_state.pop("goto_todo", False):
+    st.switch_page(_todo_page)
+
 pg.run()

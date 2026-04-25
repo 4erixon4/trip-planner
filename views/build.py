@@ -16,14 +16,9 @@ from utils.images import (
 from utils.gemini_helper import enrich_destination_info
 
 from views._shared import (
-    cached_trips, cached_itinerary, trip_day_number, format_price, parse_link,
-    trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
+    cached_trips, cached_itinerary, cached_tasks, trip_day_number, format_price,
+    parse_link, trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_tasks(trip_id: str):
-    return get_tasks(trip_id)
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "ILS", "AUD", "CAD", "Other"]
 ICON_KEYS   = list(DESTINATION_ICONS.keys())
@@ -314,44 +309,58 @@ def _entry_card(
             st.caption(":material/image: Illustration ready ✓")
 
         # ── Linked tasks ─────────────────────────────────────────────────────
-        if not linked_tasks.empty or not unlinked_tasks.empty:
-            with st.expander(
-                f":material/checklist: Tasks ({len(linked_tasks)})" if not linked_tasks.empty
-                else ":material/checklist: Link tasks",
-                icon=":material/checklist:",
-            ):
+        if tasks_df is not None and not tasks_df.empty:
+            _BADGE = {"High": "🔴", "Medium": "🟡", "Normal": "⚪"}
+            lbl = f"Tasks ({len(linked_tasks)})" if not linked_tasks.empty else "Link tasks"
+            with st.expander(lbl, icon=":material/checklist:"):
+                # Currently linked tasks
                 for _, t in linked_tasks.iterrows():
-                    tid  = str(t["task_id"])
+                    tid   = str(t["task_id"])
                     tdesc = str(t.get("description", "")).strip()
                     tdone = bool(t.get("done", False))
-                    label = f":gray[~~{tdesc}~~]" if tdone else tdesc
-                    c1, c2 = st.columns([5, 1])
-                    with c1:
-                        st.caption(label)
-                    with c2:
+                    pri   = str(t.get("priority", "Normal"))
+                    badge = _BADGE.get(pri, "⚪")
+                    text  = f":gray[~~{badge} {tdesc}~~]" if tdone else f"{badge} {tdesc}"
+                    with st.container(
+                        horizontal=True,
+                        vertical_alignment="center",
+                        horizontal_alignment="distribute",
+                    ):
+                        st.markdown(text)
                         if st.button("", icon=":material/link_off:", key=f"unlink_{eid}_{tid}",
-                                     type="tertiary", help="Unlink task"):
+                                     type="tertiary", help="Unlink"):
                             unlink_task_from_entry(tid)
                             st.cache_data.clear()
                             st.rerun()
 
+                # Multi-select to add new links
                 if not unlinked_tasks.empty:
                     opts = {
-                        str(t["task_id"]): str(t.get("description", ""))
+                        str(t["task_id"]): f"{_BADGE.get(str(t.get('priority','Normal')),'⚪')} {str(t.get('description',''))}"
                         for _, t in unlinked_tasks.iterrows()
                     }
-                    chosen_id = st.selectbox(
-                        "Link a task",
-                        options=[""] + list(opts.keys()),
-                        format_func=lambda k: opts.get(k, "— pick —") if k else "— pick —",
-                        key=f"link_sel_{eid}",
+                    selected = st.multiselect(
+                        "Add tasks",
+                        options=list(opts.keys()),
+                        format_func=lambda k: opts[k],
+                        key=f"link_multi_{eid}",
+                        placeholder="Select tasks to link…",
                         label_visibility="collapsed",
                     )
-                    if chosen_id and st.button("Link", icon=":material/link:", key=f"link_btn_{eid}",
-                                               type="primary"):
-                        link_task_to_entry(chosen_id, eid)
-                        st.cache_data.clear()
-                        st.rerun()
+                    if selected:
+                        if st.button("Save", icon=":material/link:", key=f"link_save_{eid}",
+                                     type="primary", use_container_width=True):
+                            for tid in selected:
+                                link_task_to_entry(tid, eid)
+                            st.cache_data.clear()
+                            st.rerun()
+
+                # Navigation shortcut to To Do page
+                if st.button("→ Manage all tasks in To Do", icon=":material/open_in_new:",
+                             type="tertiary", key=f"goto_todo_{eid}",
+                             use_container_width=True):
+                    st.session_state["goto_todo"] = True
+                    st.rerun()
 
         if st.session_state.get(f"editing_{eid}", False):
             _edit_entry_form(trip_row, entry)
@@ -481,15 +490,11 @@ def render() -> None:
 
     with st.container(border=True):
         st.subheader(trip_row["trip_name"], anchor=False)
-        st.caption(
-            f":material/public: {trip_row['country']}  ·  "
-            f":material/calendar_month: {trip_row['start_date']} → {trip_row['end_date']}"
-        )
-        if trip_row.get("notes"):
-            st.write(trip_row["notes"])
-        # Delete trip — bottom right of the trip card
-        _, del_col = st.columns([4, 1])
-        with del_col:
+        with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute"):
+            st.caption(
+                f":material/public: {trip_row['country']}  ·  "
+                f":material/calendar_month: {trip_row['start_date']} → {trip_row['end_date']}"
+            )
             if st.button(
                 "Delete",
                 icon=":material/delete_forever:",
@@ -498,6 +503,8 @@ def render() -> None:
                 help="Delete this trip permanently",
             ):
                 st.session_state["confirm_delete_trip"] = True
+        if trip_row.get("notes"):
+            st.write(trip_row["notes"])
         if st.session_state.get("confirm_delete_trip"):
             st.warning("This will permanently delete the trip and all its data.")
             c1, c2 = st.columns(2)
@@ -518,7 +525,7 @@ def render() -> None:
         st.session_state["adding_entry"] = not st.session_state.get("adding_entry", False)
 
     itin_df  = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
-    tasks_df = _cached_tasks(str(trip_row["trip_id"]))
+    tasks_df = cached_tasks(str(trip_row["trip_id"]))
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 

@@ -3,18 +3,13 @@
 import streamlit as st
 import pandas as pd
 
-from utils.sheets import get_tasks, add_task, delete_task, mark_task_done, TASK_COLS
+from utils.sheets import add_task, delete_task, mark_task_done
 from utils.config import cfg
-from views._shared import trip_picker, parse_link
+from views._shared import trip_picker, parse_link, cached_tasks
 
 PRIORITIES = ["Normal", "Medium", "High"]
 
 _PRIORITY_ORDER = {"High": 0, "Medium": 1, "Normal": 2}
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_tasks(trip_id: str) -> pd.DataFrame:
-    return get_tasks(trip_id)
 
 
 def _priority_label(desc: str, priority: str) -> str:
@@ -30,6 +25,8 @@ def _add_task_form(trip_id: str, assignees: list[str]) -> None:
     with st.form("add_task_form", clear_on_submit=True, border=True):
         st.subheader("New task", anchor=False)
         desc     = st.text_input("Task", placeholder="e.g. Book airport transfer")
+        notes    = st.text_area("Description (optional)", placeholder="Extra details…", height=70)
+        due_date = st.date_input("Due date (optional)", value=None)
         assigned = st.selectbox("Assign to", ["Unassigned"] + assignees)
         priority = st.selectbox("Priority", PRIORITIES)
         links    = st.text_input(
@@ -47,7 +44,9 @@ def _add_task_form(trip_id: str, assignees: list[str]) -> None:
             if not desc.strip():
                 st.error("Task description is required.")
             else:
-                if add_task(trip_id, desc.strip(), assigned, priority, links.strip()):
+                due_str = str(due_date) if due_date else ""
+                if add_task(trip_id, desc.strip(), assigned, priority,
+                            links.strip(), notes=notes.strip(), due_date=due_str):
                     st.cache_data.clear()
                     st.session_state["adding_task"] = False
                     st.rerun()
@@ -86,7 +85,7 @@ def render() -> None:
     if st.session_state.get("adding_task", False):
         _add_task_form(trip_id, assignees)
 
-    tasks_df = _cached_tasks(trip_id)
+    tasks_df = cached_tasks(trip_id)
 
     if tasks_df.empty:
         st.info("No tasks yet — add one above.", icon=":material/info:")
@@ -113,6 +112,8 @@ def render() -> None:
     def _render_task_row(task, is_done: bool) -> None:
         task_id  = str(task.get("task_id", ""))
         desc     = str(task.get("description", "")).strip()
+        notes    = str(task.get("notes", "") or "").strip()
+        due_date = str(task.get("due_date", "") or "").strip()
         assignee = str(task.get("assigned_to", "Unassigned")).strip()
         priority = str(task.get("priority", "Normal")).strip() or "Normal"
         links    = str(task.get("links", "") or "").strip()
@@ -129,6 +130,11 @@ def render() -> None:
                     mark_task_done(task_id)
                     st.cache_data.clear()
                     st.rerun()
+
+            if notes and not is_done:
+                st.caption(notes)
+            if due_date and not is_done:
+                st.caption(f":material/event: {due_date}")
 
             with st.container(horizontal=True, horizontal_alignment="right",
                               vertical_alignment="center"):

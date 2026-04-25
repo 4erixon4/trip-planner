@@ -138,10 +138,11 @@ def _cleanup_old_image(entry_id: str) -> None:
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_bucket_public() -> None:
     """
     Make sure the Storage bucket has public read access.
-    Call once at app startup — non-fatal if it fails.
+    Cached with st.cache_resource so it runs once per server process, not per rerun.
     """
     try:
         info = _sb().storage.get_bucket(BUCKET)

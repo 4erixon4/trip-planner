@@ -7,16 +7,10 @@ import requests as _requests
 import streamlit as st
 
 from utils.gemini_helper import stream_destination_response
-from utils.sheets import get_tasks
 from views._shared import (
-    cached_itinerary, trip_day_number, format_price, parse_link,
+    cached_itinerary, cached_tasks, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def _cached_tasks_travel(trip_id: str) -> pd.DataFrame:
-    return get_tasks(trip_id)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -209,17 +203,24 @@ def _entry_card(entry: pd.Series, linked_tasks: pd.DataFrame | None = None) -> N
 
         # Linked active tasks
         if linked_tasks is not None and not linked_tasks.empty:
+            _PRI = {"High": 0, "Medium": 1, "Normal": 2}
             active = linked_tasks[~linked_tasks["done"]] if "done" in linked_tasks.columns else linked_tasks
             if not active.empty:
-                st.divider()
-                st.caption(":material/checklist: Tasks for this stop")
-                for _, t in active.iterrows():
-                    tdesc    = str(t.get("description", "")).strip()
-                    priority = str(t.get("priority", "Normal")).strip()
-                    assignee = str(t.get("assigned_to", "")).strip()
-                    badge = "🔴 " if priority == "High" else ("🟡 " if priority == "Medium" else "")
-                    suffix = f"  :gray[— {assignee}]" if assignee and assignee != "Unassigned" else ""
-                    st.markdown(f"- {badge}**{tdesc}**{suffix}")
+                active = active.copy()
+                active["_p"] = active["priority"].apply(lambda p: _PRI.get(str(p).strip(), 2))
+                active = active.sort_values("_p").drop(columns=["_p"])
+                with st.expander(f"Tasks ({len(active)})", icon=":material/checklist:"):
+                    for _, t in active.iterrows():
+                        tdesc    = str(t.get("description", "")).strip()
+                        tnotes   = str(t.get("notes", "") or "").strip()
+                        tdue     = str(t.get("due_date", "") or "").strip()
+                        assignee = str(t.get("assigned_to", "")).strip()
+                        suffix = f"  :gray[— {assignee}]" if assignee and assignee != "Unassigned" else ""
+                        st.markdown(f"- **{tdesc}**{suffix}")
+                        if tnotes:
+                            st.caption(f"  {tnotes}")
+                        if tdue:
+                            st.caption(f"  :material/event: {tdue}")
 
 
 # ─── Page entry point ─────────────────────────────────────────────────────────
@@ -259,7 +260,7 @@ def render() -> None:
 
     trip_id = str(trip_row["trip_id"])
     itin_df  = cached_itinerary(trip_id, str(trip_row.get("sheet_tab", "")))
-    tasks_df = _cached_tasks_travel(trip_id)
+    tasks_df = cached_tasks(trip_id)
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 
@@ -271,7 +272,8 @@ def render() -> None:
         return
 
     # Day-picker — labels include the day title when set
-    all_dates = sorted(entries_df["date"].unique())
+    all_dates  = sorted(entries_df["date"].unique())
+    all_dates_str = [str(d) for d in all_dates]
     labels: dict[str, str] = {}
     default_idx = 0
     for i, d in enumerate(all_dates):
@@ -280,6 +282,17 @@ def render() -> None:
         labels[d] = f"Day {dn} — {d}" + (f" — {dtitle}" if dtitle else "")
         if str(d) == str(today):
             default_idx = i
+
+    # Auto-jump to today when within the trip, once per calendar day.
+    # We track the last date we auto-set so manual day changes are preserved
+    # within the same calendar day.
+    today_str = str(today)
+    if within_trip:
+        last_auto = st.session_state.get("_travel_auto_date", "")
+        if last_auto != today_str:
+            if today_str in all_dates_str:
+                st.session_state["travel_day_pick"] = today_str
+            st.session_state["_travel_auto_date"] = today_str
 
     chosen = st.selectbox(
         "Showing",

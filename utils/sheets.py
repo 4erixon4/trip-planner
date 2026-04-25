@@ -72,6 +72,8 @@ TASK_COLS = [
     "task_id",
     "trip_id",
     "description",
+    "notes",            # optional longer details / context
+    "due_date",         # optional ISO date string "YYYY-MM-DD"
     "assigned_to",      # Gmail address or "Unassigned"
     "priority",         # "High" | "Medium" | "Normal"
     "links",            # "Label | URL , Label2 | URL2"
@@ -655,8 +657,14 @@ def get_tasks(trip_id: str) -> pd.DataFrame:
                 df["done"] = False
             if "entry_id" not in df.columns:
                 df["entry_id"] = ""
-            df["done"] = df["done"].fillna(False).astype(bool)
+            if "notes" not in df.columns:
+                df["notes"] = ""
+            if "due_date" not in df.columns:
+                df["due_date"] = ""
+            df["done"]     = df["done"].fillna(False).astype(bool)
             df["entry_id"] = df["entry_id"].fillna("").astype(str)
+            df["notes"]    = df["notes"].fillna("").astype(str)
+            df["due_date"] = df["due_date"].fillna("").astype(str)
             return df
         return pd.DataFrame(columns=TASK_COLS)
     except Exception as exc:
@@ -671,6 +679,8 @@ def add_task(
     priority: str = "Normal",
     links: str = "",
     entry_id: str = "",
+    notes: str = "",
+    due_date: str = "",
 ) -> bool:
     """WRITE to Supabase + Google Sheets."""
     try:
@@ -682,6 +692,8 @@ def add_task(
             "task_id": task_id,
             "trip_id": trip_id,
             "description": description,
+            "notes": notes,
+            "due_date": due_date or None,
             "assigned_to": assigned_to,
             "priority": priority,
             "links": links,
@@ -697,7 +709,8 @@ def add_task(
             header = ws.row_values(1)
             data = {
                 "task_id": task_id, "trip_id": trip_id,
-                "description": description, "assigned_to": assigned_to,
+                "description": description, "notes": notes,
+                "due_date": due_date, "assigned_to": assigned_to,
                 "priority": priority, "links": links,
                 "done": False, "entry_id": entry_id, "created_at": now,
             }
