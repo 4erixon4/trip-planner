@@ -371,8 +371,17 @@ def _edit_entry_form(trip_row, entry) -> None:
     cur_icon = str(entry.get("icon", "location_on") or "location_on")
     cur_icon_idx = ICON_KEYS.index(cur_icon) if cur_icon in ICON_KEYS else 0
     cur_order = int(entry.get("order") or 10)
+    trip_start_str = str(trip_row["start_date"])
+    trip_end_str   = str(trip_row["end_date"])
 
     with st.form(f"edit_form_{eid}", clear_on_submit=False, border=True):
+        upd_date = st.date_input(
+            "Date",
+            value=date.fromisoformat(str(entry["date"])),
+            min_value=date.fromisoformat(trip_start_str),
+            max_value=date.fromisoformat(trip_end_str),
+        )
+
         upd_dest = st.text_input("Destination", value=entry["destination"])
         upd_desc = st.text_area("Description", value=str(entry.get("description", "")), height=80)
 
@@ -443,6 +452,8 @@ def _edit_entry_form(trip_row, entry) -> None:
 
             if update_itinerary_entry(
                 trip_row, eid,
+                date=str(upd_date),
+                day_number=trip_day_number(trip_start_str, upd_date),
                 destination=upd_dest, description=upd_desc,
                 price=upd_price, currency=upd_currency,
                 accommodation=upd_accom, links=upd_links,
@@ -469,25 +480,67 @@ def _edit_entry_form(trip_row, entry) -> None:
             st.rerun()
 
 
+# ─── Delete-trip confirmation dialog ────────────────────────────────────────
+@st.dialog("Delete trip — are you sure?")
+def _delete_trip_dialog(trip_id: str) -> None:
+    st.markdown("This will **permanently** remove the trip and all its destinations, expenses, and tasks. This cannot be undone.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key="del_dlg_cancel", type="primary", use_container_width=True):
+            st.rerun()
+    with c2:
+        if st.button("Yes, delete", key="del_dlg_confirm", use_container_width=True):
+            if delete_trip(trip_id):
+                st.session_state.pop("selected_trip_id", None)
+                st.cache_data.clear()
+                st.rerun()
+
+
 # ─── Page entry point ────────────────────────────────────────────────────────
 def render() -> None:
-    # Title + New trip button in the same row, distributed across the full width
+    # Title + New trip button in the same row
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="bottom"):
         st.header(":material/edit_note: Build", anchor=False)
-        if st.button(
-            "New trip",
-            icon=":material/add:",
-            key="new_trip_btn",
-        ):
+        if st.button("New trip", icon=":material/add:", key="new_trip_btn"):
             st.session_state["adding_trip"] = not st.session_state.get("adding_trip", False)
 
     if st.session_state.get("adding_trip", False):
         _new_trip_form()
 
-    trip_row = trip_picker()
+    # Trip picker (left) + date-window slider (right) in one row
+    col_trip, col_dates = st.columns([0.4, 0.6])
+    with col_trip:
+        trip_row = trip_picker()
     if trip_row is None:
         return
 
+    # Load itinerary so we can populate the slider immediately
+    itin_df  = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
+    tasks_df = cached_tasks(str(trip_row["trip_id"]))
+    day_titles, entries_df = split_itinerary(itin_df)
+    entries_df = sort_entries(entries_df)
+
+    trip_start = str(trip_row["start_date"])
+    all_dates  = sorted(entries_df["date"].unique()) if not entries_df.empty else []
+
+    # Date-window slider in the right column (only when there are ≥ 2 days)
+    filter_start = date.fromisoformat(all_dates[0])  if all_dates else None
+    filter_end   = date.fromisoformat(all_dates[-1]) if all_dates else None
+    if len(all_dates) > 1:
+        date_objs  = [date.fromisoformat(str(d)) for d in all_dates]
+        filter_key = f"build_date_filter_{trip_row['trip_id']}"
+        with col_dates:
+            window = st.select_slider(
+                "Showing days",
+                options=date_objs,
+                value=(date_objs[0], date_objs[-1]),
+                format_func=lambda d: f"Day {trip_day_number(trip_start, d)} · {d}",
+                key=filter_key,
+            )
+        filter_start, filter_end = window
+        all_dates = [d for d in all_dates if filter_start <= date.fromisoformat(str(d)) <= filter_end]
+
+    # Trip card
     with st.container(border=True):
         st.subheader(trip_row["trip_name"], anchor=False)
         with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute"):
@@ -495,39 +548,15 @@ def render() -> None:
                 f":material/public: {trip_row['country']}  ·  "
                 f":material/calendar_month: {trip_row['start_date']} → {trip_row['end_date']}"
             )
-            if st.button(
-                "Delete",
-                icon=":material/delete_forever:",
-                type="tertiary",
-                key="del_trip_btn",
-                help="Delete this trip permanently",
-            ):
-                st.session_state["confirm_delete_trip"] = True
+            if st.button("Delete", icon=":material/delete_forever:", type="tertiary",
+                         key="del_trip_btn", help="Delete this trip permanently"):
+                _delete_trip_dialog(trip_row["trip_id"])
         if trip_row.get("notes"):
             st.write(trip_row["notes"])
-        if st.session_state.get("confirm_delete_trip"):
-            st.warning("This will permanently delete the trip and all its data.")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Yes, delete", icon=":material/delete_forever:", key="del_trip_confirm", type="primary"):
-                    if delete_trip(trip_row["trip_id"]):
-                        st.session_state.pop("selected_trip_id", None)
-                        st.session_state.pop("confirm_delete_trip", None)
-                        st.cache_data.clear()
-                        st.rerun()
-            with c2:
-                if st.button("Cancel", key="del_trip_cancel"):
-                    st.session_state.pop("confirm_delete_trip", None)
-                    st.rerun()
 
     if st.button("Add destination", icon=":material/add_location:", use_container_width=True,
                  type="primary", key="open_add_entry"):
         st.session_state["adding_entry"] = not st.session_state.get("adding_entry", False)
-
-    itin_df  = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
-    tasks_df = cached_tasks(str(trip_row["trip_id"]))
-    day_titles, entries_df = split_itinerary(itin_df)
-    entries_df = sort_entries(entries_df)
 
     if st.session_state.get("adding_entry", False):
         _add_entry_form(trip_row, entries_df)
@@ -536,15 +565,14 @@ def render() -> None:
         st.info("No entries yet — tap **Add destination** above.", icon=":material/info:")
         return
 
-    trip_start = str(trip_row["start_date"])
-    all_dates = sorted(entries_df["date"].unique()) if not entries_df.empty else []
-
     for entry_date in all_dates:
         day_num = trip_day_number(trip_start, date.fromisoformat(str(entry_date)))
         title   = day_titles.get(str(entry_date), "")
-        heading = f"Day {day_num} — {entry_date}" + (f" — {title}" if title else "")
+        heading  = f"Day {day_num} — {entry_date}" + (f" — {title}" if title else "")
+        weekday  = date.fromisoformat(str(entry_date)).strftime("%A")
 
         st.subheader(heading, anchor=False, divider="gray")
+        st.caption(f":gray[{weekday}]")
 
         with st.expander("Set day title", icon=":material/label:"):
             new_title = st.text_input(

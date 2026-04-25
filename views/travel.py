@@ -12,6 +12,115 @@ from views._shared import (
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
 
+# ── Icon → emoji map for the HTML export ─────────────────────────────────────
+_ICON_EMOJI = {
+    "location_on": "📍", "location_city": "🏙️", "directions_car": "🚗",
+    "directions_bus": "🚌", "train": "🚂", "flight": "✈️",
+    "directions_boat": "⛵", "hiking": "🥾", "beach_access": "🏖️",
+    "park": "🌳", "forest": "🌲", "restaurant": "🍽️", "local_cafe": "☕",
+    "nightlife": "🎶", "museum": "🏛️", "photo_camera": "📷",
+    "shopping_bag": "🛍️", "hotel": "🏨", "umbrella": "☂️",
+    "sports": "⚽", "attractions": "🎡", "tour": "🗺️",
+    "anchor": "⚓", "terrain": "⛰️",
+}
+
+
+def _build_day_html(
+    trip_name: str,
+    chosen_date: str,
+    weekday: str,
+    day_title: str,
+    entries: pd.DataFrame,
+    tasks_df: pd.DataFrame,
+) -> str:
+    """Return a print-ready HTML document for the selected day."""
+    dn_str = f"{weekday}, {chosen_date}" + (f" — {day_title}" if day_title else "")
+
+    rows_html = ""
+    for _, e in entries.iterrows():
+        eid      = str(e.get("entry_id", ""))
+        icon     = _ICON_EMOJI.get(str(e.get("icon", "")), "📍")
+        dest     = str(e.get("destination", ""))
+        t_start  = str(e.get("time_start", "") or "").strip()
+        t_end    = str(e.get("time_end", "")   or "").strip()
+        time_str = (f"{t_start}–{t_end}" if t_end else t_start) if t_start else ""
+        desc     = str(e.get("description", "") or "").strip()
+        price    = format_price(str(e.get("price", "")), str(e.get("currency", "")))
+        accom    = str(e.get("accommodation", "") or "").strip()
+        links    = str(e.get("links", "")         or "").strip()
+        extra    = str(e.get("additional_info", "") or "").strip()
+        maps_url = str(e.get("maps_url", "") or "").strip() or \
+                   f"https://maps.google.com/?q={dest.replace(' ', '+')}"
+
+        # linked active tasks
+        entry_task_rows = ""
+        if not tasks_df.empty and "entry_id" in tasks_df.columns:
+            active = tasks_df[(tasks_df["entry_id"] == eid) & (~tasks_df["done"].fillna(False).astype(bool))]
+            _PRI = {"High": 0, "Medium": 1, "Normal": 2}
+            active = active.copy()
+            active["_p"] = active["priority"].apply(lambda p: _PRI.get(str(p).strip(), 2))
+            active = active.sort_values("_p")
+            for _, t in active.iterrows():
+                tdesc = str(t.get("description", "")).strip()
+                badge = "🔴 " if str(t.get("priority")) == "High" else ("🟡 " if str(t.get("priority")) == "Medium" else "")
+                entry_task_rows += f"<li>{badge}{tdesc}</li>"
+
+        # links html
+        links_html = ""
+        if links:
+            for raw in [l.strip() for l in links.split(",") if l.strip()]:
+                label, url = parse_link(raw)
+                links_html += f'<a href="{url}" target="_blank">🔗 {label}</a>  '
+
+        rows_html += f"""
+        <div class="card">
+          <h3>{icon} {dest}
+            {"<span class='time'>" + time_str + "</span>" if time_str else ""}
+            <a href="{maps_url}" target="_blank" class="maps-btn">📍 Maps</a>
+          </h3>
+          {"<p class='desc'>" + desc + "</p>" if desc else ""}
+          {"<p class='meta'>" + "  ·  ".join(filter(None, [price, ("🏨 " + accom) if accom else ""])) + "</p>" if price or accom else ""}
+          {"<p class='links'>" + links_html + "</p>" if links_html else ""}
+          {"<details open><summary>More info</summary><p>" + extra.replace(chr(10), "<br>") + "</p></details>" if extra else ""}
+          {"<details open><summary>Tasks</summary><ul>" + entry_task_rows + "</ul></details>" if entry_task_rows else ""}
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{trip_name} — {dn_str}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          max-width: 780px; margin: 40px auto; color: #1a1a1a; padding: 0 20px; }}
+  h1   {{ font-size: 1.6rem; margin-bottom: 4px; }}
+  .sub {{ color: #666; font-size: 0.95rem; margin-bottom: 24px; }}
+  .card {{ border: 1px solid #e0e0e0; border-radius: 10px; padding: 16px 20px;
+            margin-bottom: 16px; page-break-inside: avoid; }}
+  h3   {{ margin: 0 0 8px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; }}
+  .maps-btn {{ font-size: 0.78rem; font-weight: normal; color: #1a73e8;
+               text-decoration: none; border: 1px solid #c5d8f5; border-radius: 4px;
+               padding: 1px 7px; margin-left: 8px; white-space: nowrap; }}
+  .maps-btn:hover {{ background: #e8f0fe; }}
+  .time {{ background: #f0f0f0; border-radius: 4px; padding: 1px 7px;
+            font-size: 0.82rem; font-weight: normal; margin-left: 6px; }}
+  .desc {{ margin: 6px 0; }}
+  .meta {{ color: #555; font-size: 0.88rem; margin: 4px 0; }}
+  .links a {{ color: #1a73e8; font-size: 0.9rem; margin-right: 12px; }}
+  details {{ margin-top: 8px; }}
+  summary {{ cursor: pointer; color: #555; font-size: 0.9rem; }}
+  ul {{ margin: 6px 0 0 16px; padding: 0; }}
+  li {{ font-size: 0.9rem; margin-bottom: 3px; }}
+  @media print {{ .card {{ border-color: #ccc; }} }}
+</style>
+</head>
+<body>
+  <h1>{trip_name}</h1>
+  <p class="sub">{dn_str}</p>
+  {rows_html}
+</body>
+</html>"""
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_image(url: str) -> bytes | None:
@@ -294,20 +403,48 @@ def render() -> None:
                 st.session_state["travel_day_pick"] = today_str
             st.session_state["_travel_auto_date"] = today_str
 
-    chosen = st.selectbox(
-        "Showing",
-        all_dates,
-        index=default_idx,
-        format_func=lambda d: labels[d],
-        key="travel_day_pick",
-    )
+    col_sel, col_dl = st.columns([0.7, 0.3])
+    with col_sel:
+        chosen = st.selectbox(
+            "Showing",
+            all_dates,
+            index=default_idx,
+            format_func=lambda d: labels[d],
+            key="travel_day_pick",
+        )
 
-    # Day title caption
+    # Weekday + optional day title
+    weekday   = date.fromisoformat(str(chosen)).strftime("%A")
     day_title = day_titles.get(str(chosen), "")
+    caption_parts = [f":gray[{weekday}]"]
     if day_title:
-        st.caption(f":material/label: {day_title}")
+        caption_parts.append(f":material/label: {day_title}")
+    st.caption("  ·  ".join(caption_parts))
 
     today_entries = entries_df[entries_df["date"] == str(chosen)]
+
+    # Download button — generates HTML for the selected day
+    with col_dl:
+        st.space('small')
+        if not today_entries.empty:
+            html_bytes = _build_day_html(
+                trip_name=str(trip_row["trip_name"]),
+                chosen_date=str(chosen),
+                weekday=weekday,
+                day_title=day_title,
+                entries=today_entries,
+                tasks_df=tasks_df,
+            ).encode("utf-8")
+            st.download_button(
+                "",
+                data=html_bytes,
+                file_name=f"day_{chosen}.html",
+                mime="text/html",
+                icon=":material/download:",
+                help="Download day as HTML (open in browser → Print → Save as PDF)",
+                use_container_width=True,
+            )
+
     if today_entries.empty:
         st.info(f"No entries for {chosen}.", icon=":material/inbox:")
         return
