@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 
-from utils.sheets import get_tasks, add_task, delete_task, TASK_COLS
+from utils.sheets import get_tasks, add_task, delete_task, mark_task_done, TASK_COLS
 from utils.config import cfg
 from views._shared import trip_picker, parse_link
 
@@ -107,7 +107,10 @@ def render() -> None:
         .reset_index(drop=True)
     )
 
-    for _, task in tasks_df.iterrows():
+    active_df = tasks_df[~tasks_df["done"]].copy() if "done" in tasks_df.columns else tasks_df.copy()
+    done_df   = tasks_df[tasks_df["done"]].copy()  if "done" in tasks_df.columns else pd.DataFrame()
+
+    def _render_task_row(task, is_done: bool) -> None:
         task_id  = str(task.get("task_id", ""))
         desc     = str(task.get("description", "")).strip()
         assignee = str(task.get("assigned_to", "Unassigned")).strip()
@@ -115,14 +118,23 @@ def render() -> None:
         links    = str(task.get("links", "") or "").strip()
 
         with st.container(border=True):
-            done = st.checkbox(
-                _priority_label(desc, priority),
-                key=f"task_chk_{task_id}",
-            )
+            if is_done:
+                st.markdown(f":gray[~~{desc}~~]")
+            else:
+                checked = st.checkbox(
+                    _priority_label(desc, priority),
+                    key=f"task_chk_{task_id}",
+                )
+                if checked:
+                    mark_task_done(task_id)
+                    st.cache_data.clear()
+                    st.rerun()
+
             with st.container(horizontal=True, horizontal_alignment="right",
                               vertical_alignment="center"):
                 if assignee and assignee != "Unassigned":
-                    st.caption(f":material/person: {assignee}")
+                    label = ":gray[" + assignee + "]" if is_done else f":material/person: {assignee}"
+                    st.caption(label)
                 st.button(
                     "",
                     icon=":material/delete:",
@@ -132,12 +144,15 @@ def render() -> None:
                     on_click=_delete_task_cb,
                     args=(task_id,),
                 )
-            if links:
+            if links and not is_done:
                 for raw in [l.strip() for l in links.split(",") if l.strip()]:
                     label, url = parse_link(raw)
                     st.link_button(label, url, icon=":material/link:", use_container_width=True)
 
-        if done:
-            delete_task(task_id)
-            st.cache_data.clear()
-            st.rerun()
+    for _, task in active_df.iterrows():
+        _render_task_row(task, is_done=False)
+
+    if not done_df.empty:
+        st.caption(":material/check_circle: Completed")
+        for _, task in done_df.iterrows():
+            _render_task_row(task, is_done=True)

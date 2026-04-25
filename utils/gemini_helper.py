@@ -56,6 +56,41 @@ def _build_prompt(
     return "\n".join(parts)
 
 
+def enrich_destination_info(
+    destination: str,
+    description: str = "",
+    maps_url: str = "",
+    additional_info: str = "",
+) -> str:
+    """
+    Return an enrichment block (bullet points) to append to a destination's
+    'Additional info' field.  Synchronous — wrap in st.spinner() on the call site.
+    """
+    parts = [
+        "You are a concise travel guide. Enrich the following destination card with "
+        "useful, practical info the traveller would want to know BEFORE arriving. "
+        "Focus on: top things to do/see, hidden gems, what to search online, "
+        "practical tips (opening hours, tickets, transport). "
+        "Use short markdown bullet points (5-8 bullets max). "
+        "Do NOT repeat info already in 'Existing notes'.",
+        "",
+        f"Destination: {destination}",
+    ]
+    if description:
+        parts.append(f"Context: {description}")
+    if maps_url:
+        parts.append(f"Maps: {maps_url}")
+    if additional_info:
+        parts.append(f"Existing notes: {additional_info}")
+
+    prompt = "\n".join(parts)
+    try:
+        resp = _client().models.generate_content(model=MODEL, contents=prompt)
+        return (resp.text or "").strip()
+    except Exception as exc:
+        return f"❌ Enrichment failed: {exc}"
+
+
 def stream_destination_response(
     destination: str,
     question: str | None = None,

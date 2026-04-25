@@ -75,6 +75,8 @@ TASK_COLS = [
     "assigned_to",      # Gmail address or "Unassigned"
     "priority",         # "High" | "Medium" | "Normal"
     "links",            # "Label | URL , Label2 | URL2"
+    "done",             # bool – completed but kept for history
+    "entry_id",         # optional link to an itinerary entry
     "created_at",
 ]
 
@@ -649,6 +651,12 @@ def get_tasks(trip_id: str) -> pd.DataFrame:
             df = pd.DataFrame(resp.data)
             if "priority" not in df.columns:
                 df["priority"] = "Normal"
+            if "done" not in df.columns:
+                df["done"] = False
+            if "entry_id" not in df.columns:
+                df["entry_id"] = ""
+            df["done"] = df["done"].fillna(False).astype(bool)
+            df["entry_id"] = df["entry_id"].fillna("").astype(str)
             return df
         return pd.DataFrame(columns=TASK_COLS)
     except Exception as exc:
@@ -662,6 +670,7 @@ def add_task(
     assigned_to: str,
     priority: str = "Normal",
     links: str = "",
+    entry_id: str = "",
 ) -> bool:
     """WRITE to Supabase + Google Sheets."""
     try:
@@ -676,6 +685,8 @@ def add_task(
             "assigned_to": assigned_to,
             "priority": priority,
             "links": links,
+            "done": False,
+            "entry_id": entry_id,
             "created_at": now,
         }).execute()
 
@@ -687,7 +698,8 @@ def add_task(
             data = {
                 "task_id": task_id, "trip_id": trip_id,
                 "description": description, "assigned_to": assigned_to,
-                "priority": priority, "links": links, "created_at": now,
+                "priority": priority, "links": links,
+                "done": False, "entry_id": entry_id, "created_at": now,
             }
             ws.append_row([data.get(col, "") for col in header])
         except Exception as sh_exc:
@@ -696,6 +708,34 @@ def add_task(
         return True
     except Exception as exc:
         st.error(f"Error adding task: {exc}")
+        return False
+
+
+def mark_task_done(task_id: str) -> bool:
+    """Mark a task as done (keeps it in history). Supabase only."""
+    try:
+        _sb().table("tasks").update({"done": True}).eq("task_id", task_id).execute()
+        return True
+    except Exception as exc:
+        st.error(f"Error marking task done: {exc}")
+        return False
+
+
+def link_task_to_entry(task_id: str, entry_id: str) -> bool:
+    """Attach a task to an itinerary entry. Supabase only."""
+    try:
+        _sb().table("tasks").update({"entry_id": entry_id}).eq("task_id", task_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def unlink_task_from_entry(task_id: str) -> bool:
+    """Remove the entry link from a task. Supabase only."""
+    try:
+        _sb().table("tasks").update({"entry_id": ""}).eq("task_id", task_id).execute()
+        return True
+    except Exception:
         return False
 
 

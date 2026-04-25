@@ -7,10 +7,16 @@ import requests as _requests
 import streamlit as st
 
 from utils.gemini_helper import stream_destination_response
+from utils.sheets import get_tasks
 from views._shared import (
     cached_itinerary, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_tasks_travel(trip_id: str) -> pd.DataFrame:
+    return get_tasks(trip_id)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -113,7 +119,7 @@ def _gemini_dialog(entry: pd.Series) -> None:
 
 
 # ─── Entry card ───────────────────────────────────────────────────────────────
-def _entry_card(entry: pd.Series) -> None:
+def _entry_card(entry: pd.Series, linked_tasks: pd.DataFrame | None = None) -> None:
     eid       = entry["entry_id"]
     icon      = str(entry.get("icon", "") or "location_on")
     price_str = format_price(str(entry.get("price", "")), str(entry.get("currency", "")))
@@ -201,6 +207,19 @@ def _entry_card(entry: pd.Series) -> None:
             with st.expander("More info", icon=":material/info:"):
                 st.write(extra)
 
+        # Linked active tasks
+        if linked_tasks is not None and not linked_tasks.empty:
+            active = linked_tasks[~linked_tasks["done"]] if "done" in linked_tasks.columns else linked_tasks
+            if not active.empty:
+                st.divider()
+                st.caption(":material/checklist: Tasks for this stop")
+                for _, t in active.iterrows():
+                    tdesc    = str(t.get("description", "")).strip()
+                    priority = str(t.get("priority", "Normal")).strip()
+                    assignee = str(t.get("assigned_to", "")).strip()
+                    badge = "🔴 " if priority == "High" else ("🟡 " if priority == "Medium" else "")
+                    suffix = f"  :gray[— {assignee}]" if assignee and assignee != "Unassigned" else ""
+                    st.markdown(f"- {badge}**{tdesc}**{suffix}")
 
 
 # ─── Page entry point ─────────────────────────────────────────────────────────
@@ -238,7 +257,9 @@ def render() -> None:
             st.session_state[toast_key] = True
         today = trip_start if today < trip_start else trip_end
 
-    itin_df = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
+    trip_id = str(trip_row["trip_id"])
+    itin_df  = cached_itinerary(trip_id, str(trip_row.get("sheet_tab", "")))
+    tasks_df = _cached_tasks_travel(trip_id)
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 
@@ -291,6 +312,10 @@ def render() -> None:
 
     entries_list = list(today_entries.iterrows())
     for i, (_, entry) in enumerate(entries_list):
-        _entry_card(entry)
+        eid = str(entry.get("entry_id", ""))
+        entry_tasks = None
+        if not tasks_df.empty and "entry_id" in tasks_df.columns:
+            entry_tasks = tasks_df[tasks_df["entry_id"] == eid]
+        _entry_card(entry, linked_tasks=entry_tasks)
         if i < len(entries_list) - 1:
             draw_arrow()

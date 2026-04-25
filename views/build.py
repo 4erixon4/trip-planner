@@ -7,17 +7,23 @@ import streamlit as st
 from utils.sheets import (
     add_trip, delete_trip,
     add_itinerary_entry, update_itinerary_entry, delete_itinerary_entry,
-    set_day_title,
+    set_day_title, get_tasks, link_task_to_entry, unlink_task_from_entry,
 )
 from utils.images import (
     trigger_async_generation, delete_image, regenerate_sync,
     is_real_url, is_generating, is_failed,
 )
+from utils.gemini_helper import enrich_destination_info
 
 from views._shared import (
     cached_trips, cached_itinerary, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
 )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_tasks(trip_id: str):
+    return get_tasks(trip_id)
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "ILS", "AUD", "CAD", "Other"]
 ICON_KEYS   = list(DESTINATION_ICONS.keys())
@@ -197,6 +203,7 @@ def _entry_card(
     entry,
     day_entries: pd.DataFrame,
     entry_idx: int,
+    tasks_df=None,
 ) -> None:
     eid       = entry["entry_id"]
     icon      = str(entry.get("icon", "") or "location_on")
@@ -209,6 +216,15 @@ def _entry_card(
     t_end     = str(entry.get("time_end", "")).strip()
     img_url   = str(entry.get("image_url", "") or "").strip()
     n         = len(day_entries)
+
+    # Tasks linked to this entry
+    linked_tasks = pd.DataFrame()
+    unlinked_tasks = pd.DataFrame()
+    if tasks_df is not None and not tasks_df.empty:
+        if "entry_id" in tasks_df.columns:
+            linked_tasks   = tasks_df[tasks_df["entry_id"] == eid].copy()
+            done_mask      = tasks_df["done"].fillna(False).astype(bool) if "done" in tasks_df.columns else pd.Series(False, index=tasks_df.index)
+            unlinked_tasks = tasks_df[(tasks_df["entry_id"] == "") & (~done_mask)].copy()
 
     time_str  = (f"{t_start}-{t_end}" if t_end else t_start) if t_start else ""
     maps_link = maps_url or f"https://maps.google.com/?q={entry['destination'].replace(' ', '+')}"
@@ -251,7 +267,7 @@ def _entry_card(
             with st.expander("More info", icon=":material/info:"):
                 st.write(extra)
 
-        # ── Action bar: ↑ ↓ | edit | delete ─────────────────────────────────
+        # ── Action bar: ↑ ↓ | enrich | edit | delete ────────────────────────
         with st.container(horizontal=True, gap="xxsmall"):
             if st.button("", icon=":material/arrow_upward:", key=f"up_{eid}",
                          disabled=(entry_idx == 0), help="Move up"):
@@ -260,6 +276,25 @@ def _entry_card(
             if st.button("", icon=":material/arrow_downward:", key=f"dn_{eid}",
                          disabled=(entry_idx == n - 1), help="Move down"):
                 _move_entry(trip_row, day_entries, entry_idx, "down")
+
+            if st.button("", icon=":material/auto_awesome:", key=f"enrich_{eid}",
+                         help="Enrich 'More info' with AI"):
+                with st.spinner("Enriching with AI…"):
+                    result = enrich_destination_info(
+                        destination=str(entry.get("destination", "")),
+                        description=str(entry.get("description", "")),
+                        maps_url=str(entry.get("maps_url", "")),
+                        additional_info=extra,
+                    )
+                if result and not result.startswith("❌"):
+                    separator = "\n\n---\n**✨ AI Enrichment**\n"
+                    new_info = (extra + separator + result) if extra else ("**✨ AI Enrichment**\n" + result)
+                    update_itinerary_entry(trip_row, eid, additional_info=new_info)
+                    st.toast("More info enriched!", icon=":material/auto_awesome:")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(result)
 
             if st.button("", icon=":material/edit:", key=f"edit_{eid}", help="Edit"):
                 st.session_state[f"editing_{eid}"] = not st.session_state.get(f"editing_{eid}", False)
@@ -277,6 +312,46 @@ def _entry_card(
             st.error(f":material/broken_image: Illustration failed — {img_url[7:]}")
         elif is_real_url(img_url):
             st.caption(":material/image: Illustration ready ✓")
+
+        # ── Linked tasks ─────────────────────────────────────────────────────
+        if not linked_tasks.empty or not unlinked_tasks.empty:
+            with st.expander(
+                f":material/checklist: Tasks ({len(linked_tasks)})" if not linked_tasks.empty
+                else ":material/checklist: Link tasks",
+                icon=":material/checklist:",
+            ):
+                for _, t in linked_tasks.iterrows():
+                    tid  = str(t["task_id"])
+                    tdesc = str(t.get("description", "")).strip()
+                    tdone = bool(t.get("done", False))
+                    label = f":gray[~~{tdesc}~~]" if tdone else tdesc
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        st.caption(label)
+                    with c2:
+                        if st.button("", icon=":material/link_off:", key=f"unlink_{eid}_{tid}",
+                                     type="tertiary", help="Unlink task"):
+                            unlink_task_from_entry(tid)
+                            st.cache_data.clear()
+                            st.rerun()
+
+                if not unlinked_tasks.empty:
+                    opts = {
+                        str(t["task_id"]): str(t.get("description", ""))
+                        for _, t in unlinked_tasks.iterrows()
+                    }
+                    chosen_id = st.selectbox(
+                        "Link a task",
+                        options=[""] + list(opts.keys()),
+                        format_func=lambda k: opts.get(k, "— pick —") if k else "— pick —",
+                        key=f"link_sel_{eid}",
+                        label_visibility="collapsed",
+                    )
+                    if chosen_id and st.button("Link", icon=":material/link:", key=f"link_btn_{eid}",
+                                               type="primary"):
+                        link_task_to_entry(chosen_id, eid)
+                        st.cache_data.clear()
+                        st.rerun()
 
         if st.session_state.get(f"editing_{eid}", False):
             _edit_entry_form(trip_row, entry)
@@ -393,7 +468,6 @@ def render() -> None:
         if st.button(
             "New trip",
             icon=":material/add:",
-            type="primary",
             key="new_trip_btn",
         ):
             st.session_state["adding_trip"] = not st.session_state.get("adding_trip", False)
@@ -413,19 +487,38 @@ def render() -> None:
         )
         if trip_row.get("notes"):
             st.write(trip_row["notes"])
+        # Delete trip — bottom right of the trip card
+        _, del_col = st.columns([4, 1])
+        with del_col:
+            if st.button(
+                "Delete",
+                icon=":material/delete_forever:",
+                type="tertiary",
+                key="del_trip_btn",
+                help="Delete this trip permanently",
+            ):
+                st.session_state["confirm_delete_trip"] = True
+        if st.session_state.get("confirm_delete_trip"):
+            st.warning("This will permanently delete the trip and all its data.")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Yes, delete", icon=":material/delete_forever:", key="del_trip_confirm", type="primary"):
+                    if delete_trip(trip_row["trip_id"]):
+                        st.session_state.pop("selected_trip_id", None)
+                        st.session_state.pop("confirm_delete_trip", None)
+                        st.cache_data.clear()
+                        st.rerun()
+            with c2:
+                if st.button("Cancel", key="del_trip_cancel"):
+                    st.session_state.pop("confirm_delete_trip", None)
+                    st.rerun()
 
-    with st.expander("Delete trip", icon=":material/warning:"):
-        st.warning("This will permanently delete the trip and its Google Sheets tab.")
-        if st.button("Yes, delete trip", icon=":material/delete_forever:", key="del_trip_btn"):
-            if delete_trip(trip_row["trip_id"]):
-                st.session_state.pop("selected_trip_id", None)
-                st.cache_data.clear()
-                st.rerun()
-
-    if st.button("Add destination", icon=":material/add_location:", use_container_width=True, key="open_add_entry"):
+    if st.button("Add destination", icon=":material/add_location:", use_container_width=True,
+                 type="primary", key="open_add_entry"):
         st.session_state["adding_entry"] = not st.session_state.get("adding_entry", False)
 
-    itin_df = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
+    itin_df  = cached_itinerary(str(trip_row["trip_id"]), str(trip_row.get("sheet_tab", "")))
+    tasks_df = _cached_tasks(str(trip_row["trip_id"]))
     day_titles, entries_df = split_itinerary(itin_df)
     entries_df = sort_entries(entries_df)
 
@@ -460,6 +553,6 @@ def render() -> None:
 
         group = entries_df[entries_df["date"] == entry_date].reset_index(drop=True)
         for entry_idx, (_, entry) in enumerate(group.iterrows()):
-            _entry_card(trip_row, entry, day_entries=group, entry_idx=entry_idx)
+            _entry_card(trip_row, entry, day_entries=group, entry_idx=entry_idx, tasks_df=tasks_df)
             if entry_idx < len(group) - 1:
                 draw_arrow()
