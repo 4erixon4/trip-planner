@@ -7,6 +7,7 @@ import requests as _requests
 import streamlit as st
 
 from utils.gemini_helper import stream_destination_response
+from utils.images import get_entry_images
 from views._shared import (
     cached_itinerary, cached_tasks, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
@@ -309,6 +310,15 @@ def _entry_card(entry: pd.Series, linked_tasks: pd.DataFrame | None = None) -> N
         if extra:
             with st.expander("More info", icon=":material/info:"):
                 st.write(extra)
+
+        # Attached photos
+        photos = get_entry_images(eid)
+        if photos:
+            with st.expander(f"Photos ({len(photos)})", icon=":material/photo_library:"):
+                cols = st.columns(3)
+                for i, ph in enumerate(photos):
+                    with cols[i % 3]:
+                        st.image(ph["url"], use_container_width=True)
 
         # Linked active tasks
         if linked_tasks is not None and not linked_tasks.empty:

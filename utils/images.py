@@ -10,6 +10,7 @@ image_url field lifecycle:
 
 from __future__ import annotations
 
+import re
 import uuid
 import threading
 import traceback
@@ -150,6 +151,69 @@ def ensure_bucket_public() -> None:
             _sb().storage.update_bucket(BUCKET, options={"public": True})
     except Exception:
         pass
+
+
+# ─── Entry photo uploads ──────────────────────────────────────────────────────
+
+
+def get_entry_images(entry_id: str) -> list[dict]:
+    """Return list of {image_id, url, filename} for an entry."""
+    try:
+        resp = (
+            _sb().table("entry_images")
+            .select("image_id,url,filename")
+            .eq("entry_id", entry_id)
+            .order("created_at")
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
+def upload_entry_image(
+    entry_id: str,
+    trip_id: str,
+    file_bytes: bytes,
+    filename: str,
+    content_type: str = "image/jpeg",
+) -> str | None:
+    """Upload a user photo, insert a row in entry_images, return public URL."""
+    try:
+        image_id = f"img_{uuid.uuid4().hex[:10]}"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+        path = f"entry_images/{entry_id}/{image_id}_{safe_name}"
+        _sb().storage.from_(BUCKET).upload(
+            path,
+            file_bytes,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+        pub = _sb().storage.from_(BUCKET).get_public_url(path)
+        _sb().table("entry_images").insert({
+            "image_id": image_id,
+            "entry_id": entry_id,
+            "trip_id": trip_id,
+            "url": pub,
+            "filename": filename,
+            "created_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        }).execute()
+        return pub
+    except Exception as exc:
+        import streamlit as _st
+        _st.error(f"Upload failed: {exc}")
+        return None
+
+
+def delete_entry_image(image_id: str, image_url: str) -> bool:
+    """Remove photo from bucket + entry_images table."""
+    try:
+        path = _path_from_url(image_url)
+        if path:
+            _sb().storage.from_(BUCKET).remove([path])
+        _sb().table("entry_images").delete().eq("image_id", image_id).execute()
+        return True
+    except Exception:
+        return False
 
 
 def delete_image(image_url: str) -> bool:

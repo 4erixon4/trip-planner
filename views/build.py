@@ -12,6 +12,7 @@ from utils.sheets import (
 from utils.images import (
     trigger_async_generation, delete_image, regenerate_sync,
     is_real_url, is_generating, is_failed,
+    get_entry_images, upload_entry_image, delete_entry_image,
 )
 from utils.gemini_helper import enrich_destination_info
 
@@ -307,6 +308,56 @@ def _entry_card(
             st.error(f":material/broken_image: Illustration failed — {img_url[7:]}")
         elif is_real_url(img_url):
             st.caption(":material/image: Illustration ready ✓")
+
+        # ── Attached photos ───────────────────────────────────────────────────
+        photos = get_entry_images(eid)
+        trip_id_str = str(trip_row["trip_id"])
+        with st.expander(
+            f"Photos ({len(photos)})" if photos else "Add photos",
+            icon=":material/photo_library:",
+        ):
+            # Show existing photos
+            if photos:
+                cols = st.columns(3)
+                for i, ph in enumerate(photos):
+                    with cols[i % 3]:
+                        st.image(ph["url"], use_container_width=True)
+                        if st.button(
+                            "",
+                            icon=":material/delete:",
+                            type="tertiary",
+                            key=f"ph_del_{ph['image_id']}",
+                            help=f"Remove {ph.get('filename','photo')}",
+                        ):
+                            delete_entry_image(ph["image_id"], ph["url"])
+                            st.rerun()
+
+            # Upload new photos
+            uploaded = st.file_uploader(
+                "Upload photos",
+                type=["jpg", "jpeg", "png", "webp"],
+                accept_multiple_files=True,
+                key=f"ph_upload_{eid}",
+                label_visibility="collapsed",
+            )
+            if uploaded:
+                if st.button(
+                    f"Upload {len(uploaded)} photo{'s' if len(uploaded) > 1 else ''}",
+                    icon=":material/upload:",
+                    type="primary",
+                    key=f"ph_upload_btn_{eid}",
+                    use_container_width=True,
+                ):
+                    for f in uploaded:
+                        upload_entry_image(
+                            entry_id=eid,
+                            trip_id=trip_id_str,
+                            file_bytes=f.read(),
+                            filename=f.name,
+                            content_type=f.type or "image/jpeg",
+                        )
+                    st.toast(f"Uploaded {len(uploaded)} photo(s).", icon=":material/check:")
+                    st.rerun()
 
         # ── Linked tasks ─────────────────────────────────────────────────────
         if tasks_df is not None and not tasks_df.empty:
