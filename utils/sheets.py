@@ -724,6 +724,62 @@ def add_task(
         return False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Equipment CRUD  (Supabase only — no Sheets sync)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_equipment(trip_id: str, owner: str) -> pd.DataFrame:
+    """READ from Supabase."""
+    try:
+        resp = (
+            _sb().table("equipment")
+            .select("*")
+            .eq("trip_id", trip_id)
+            .eq("owner", owner)
+            .order("created_at")
+            .execute()
+        )
+        if resp.data:
+            return pd.DataFrame(resp.data)
+        return pd.DataFrame(columns=["item_id", "trip_id", "owner", "description", "checked", "created_at"])
+    except Exception as exc:
+        st.error(f"Error loading equipment: {exc}")
+        return pd.DataFrame()
+
+
+def add_equipment_item(trip_id: str, owner: str, description: str) -> bool:
+    try:
+        _sb().table("equipment").insert({
+            "item_id": f"eq_{uuid.uuid4().hex[:10]}",
+            "trip_id": trip_id,
+            "owner": owner,
+            "description": description,
+            "checked": False,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }).execute()
+        return True
+    except Exception as exc:
+        st.error(f"Error adding item: {exc}")
+        return False
+
+
+def toggle_equipment_item(item_id: str, checked: bool) -> bool:
+    try:
+        _sb().table("equipment").update({"checked": checked}).eq("item_id", item_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def delete_equipment_item(item_id: str) -> bool:
+    try:
+        _sb().table("equipment").delete().eq("item_id", item_id).execute()
+        return True
+    except Exception:
+        return False
+
+
 def mark_task_done(task_id: str) -> bool:
     """Mark a task as done (keeps it in history). Supabase only."""
     try:
