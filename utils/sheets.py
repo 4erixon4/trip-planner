@@ -98,6 +98,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
+# ── Toggle Google Sheets backup sync ─────────────────────────────────────────
+# Set to True to re-enable dual-write to Google Sheets as an audit backup.
+# When False every write goes to Supabase only (faster, no quota issues).
+SHEETS_SYNC = False
+
 _DAY_TITLE_PREFIX = "daytitle_"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -224,6 +229,8 @@ def _trip_tab(trip_row: pd.Series) -> gspread.Worksheet:
 
 def ensure_sheets_exist() -> None:
     """Create the Trips/Expenses/Tasks worksheets in Google Sheets if absent."""
+    if not SHEETS_SYNC:
+        return
     try:
         ss = _spreadsheet()
         existing = {ws.title for ws in ss.worksheets()}
@@ -270,38 +277,37 @@ def add_trip(
     end_date,
     notes: str = "",
 ) -> str | None:
-    """WRITE to Google Sheets first (to create tab), then Supabase."""
+    """WRITE to Supabase (primary). Optionally syncs to Google Sheets when SHEETS_SYNC=True."""
     try:
-        ss = _spreadsheet()
-        base_tab = _safe_tab_name(trip_name)
-        tab_name = _unique_tab_name(ss, base_tab)
-        trip_id = f"trip_{uuid.uuid4().hex[:8]}"
-        now = datetime.now().isoformat(timespec="seconds")
+        trip_id  = f"trip_{uuid.uuid4().hex[:8]}"
+        now      = datetime.now().isoformat(timespec="seconds")
+        tab_name = _safe_tab_name(trip_name)
 
-        # Google Sheets: create itinerary tab + metadata row
-        itin_ws = ss.add_worksheet(title=tab_name, rows=1000, cols=len(ITINERARY_COLS))
-        itin_ws.append_row(ITINERARY_COLS)
-        trips_ws = ss.worksheet("Trips")
-        trips_ws.append_row([
-            trip_id, trip_name, country,
-            str(start_date), str(end_date),
-            notes, tab_name, now,
-        ])
+        if SHEETS_SYNC:
+            try:
+                ss       = _spreadsheet()
+                tab_name = _unique_tab_name(ss, tab_name)
+                itin_ws  = ss.add_worksheet(title=tab_name, rows=1000, cols=len(ITINERARY_COLS))
+                itin_ws.append_row(ITINERARY_COLS)
+                trips_ws = ss.worksheet("Trips")
+                trips_ws.append_row([
+                    trip_id, trip_name, country,
+                    str(start_date), str(end_date),
+                    notes, tab_name, now,
+                ])
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (add trip): {sh_exc}")
 
-        # Supabase: insert trip row
-        try:
-            _sb().table("trips").insert({
-                "trip_id": trip_id,
-                "trip_name": trip_name,
-                "country": country,
-                "start_date": str(start_date),
-                "end_date": str(end_date),
-                "notes": notes,
-                "sheet_tab": tab_name,
-                "created_at": now,
-            }).execute()
-        except Exception as sb_exc:
-            st.warning(f"Supabase sync warning (add trip): {sb_exc}")
+        _sb().table("trips").insert({
+            "trip_id":    trip_id,
+            "trip_name":  trip_name,
+            "country":    country,
+            "start_date": str(start_date),
+            "end_date":   str(end_date),
+            "notes":      notes,
+            "sheet_tab":  tab_name,
+            "created_at": now,
+        }).execute()
 
         return trip_id
     except Exception as exc:
@@ -310,28 +316,27 @@ def add_trip(
 
 
 def delete_trip(trip_id: str) -> bool:
-    """WRITE to both Supabase (cascade) + Google Sheets."""
+    """WRITE to Supabase (cascade). Optionally syncs to Google Sheets when SHEETS_SYNC=True."""
     try:
-        # Google Sheets: remove metadata row and itinerary tab
-        try:
-            ss = _spreadsheet()
-            trips_ws = ss.worksheet("Trips")
-            records = trips_ws.get_all_records()
-            tab_name = None
-            for i, row in enumerate(records):
-                if row["trip_id"] == trip_id:
-                    tab_name = row.get("sheet_tab")
-                    trips_ws.delete_rows(i + 2)
-                    break
-            if tab_name:
-                try:
-                    ss.del_worksheet(ss.worksheet(tab_name))
-                except gspread.exceptions.WorksheetNotFound:
-                    pass
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (delete trip): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ss = _spreadsheet()
+                trips_ws = ss.worksheet("Trips")
+                records  = trips_ws.get_all_records()
+                tab_name = None
+                for i, row in enumerate(records):
+                    if row["trip_id"] == trip_id:
+                        tab_name = row.get("sheet_tab")
+                        trips_ws.delete_rows(i + 2)
+                        break
+                if tab_name:
+                    try:
+                        ss.del_worksheet(ss.worksheet(tab_name))
+                    except gspread.exceptions.WorksheetNotFound:
+                        pass
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (delete trip): {sh_exc}")
 
-        # Supabase: delete trip (cascades to itinerary, expenses, tasks)
         _sb().table("trips").delete().eq("trip_id", trip_id).execute()
         return True
     except Exception as exc:
@@ -412,24 +417,24 @@ def add_itinerary_entry(
             "created_at": now,
         }).execute()
 
-        # Google Sheets write (backup)
-        try:
-            ws = _trip_tab(trip_row)
-            actual_header = ws.row_values(1)
-            values = {
-                "entry_id": entry_id, "date": str(entry_date),
-                "day_number": day_number, "order": order,
-                "destination": destination, "description": description,
-                "price": price, "currency": currency,
-                "accommodation": accommodation, "links": links,
-                "additional_info": additional_info, "icon": icon,
-                "maps_url": maps_url, "time_start": time_start,
-                "time_end": time_end, "image_prompt": image_prompt,
-                "image_url": image_url, "created_at": now,
-            }
-            ws.append_row([values.get(col, "") for col in actual_header])
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (add entry): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _trip_tab(trip_row)
+                actual_header = ws.row_values(1)
+                values = {
+                    "entry_id": entry_id, "date": str(entry_date),
+                    "day_number": day_number, "order": order,
+                    "destination": destination, "description": description,
+                    "price": price, "currency": currency,
+                    "accommodation": accommodation, "links": links,
+                    "additional_info": additional_info, "icon": icon,
+                    "maps_url": maps_url, "time_start": time_start,
+                    "time_end": time_end, "image_prompt": image_prompt,
+                    "image_url": image_url, "created_at": now,
+                }
+                ws.append_row([values.get(col, "") for col in actual_header])
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (add entry): {sh_exc}")
 
         return entry_id
     except Exception as exc:
@@ -445,20 +450,20 @@ def update_itinerary_entry(trip_row: pd.Series, entry_id: str, **fields) -> bool
             {k: str(v) for k, v in fields.items()}
         ).eq("entry_id", entry_id).execute()
 
-        # Google Sheets update (backup)
-        try:
-            ws = _trip_tab(trip_row)
-            records = ws.get_all_records()
-            actual_header = ws.row_values(1)
-            col_index = {col: idx + 1 for idx, col in enumerate(actual_header)}
-            for i, row in enumerate(records):
-                if row["entry_id"] == entry_id:
-                    for key, value in fields.items():
-                        if key in col_index:
-                            ws.update_cell(i + 2, col_index[key], str(value))
-                    break
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (update entry): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _trip_tab(trip_row)
+                records = ws.get_all_records()
+                actual_header = ws.row_values(1)
+                col_index = {col: idx + 1 for idx, col in enumerate(actual_header)}
+                for i, row in enumerate(records):
+                    if row["entry_id"] == entry_id:
+                        for key, value in fields.items():
+                            if key in col_index:
+                                ws.update_cell(i + 2, col_index[key], str(value))
+                        break
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (update entry): {sh_exc}")
 
         return True
     except Exception as exc:
@@ -472,16 +477,16 @@ def delete_itinerary_entry(trip_row: pd.Series, entry_id: str) -> bool:
         # Supabase delete (primary)
         _sb().table("itinerary").delete().eq("entry_id", entry_id).execute()
 
-        # Google Sheets delete (backup)
-        try:
-            ws = _trip_tab(trip_row)
-            records = ws.get_all_records()
-            for i, row in enumerate(records):
-                if row["entry_id"] == entry_id:
-                    ws.delete_rows(i + 2)
-                    break
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (delete entry): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _trip_tab(trip_row)
+                records = ws.get_all_records()
+                for i, row in enumerate(records):
+                    if row["entry_id"] == entry_id:
+                        ws.delete_rows(i + 2)
+                        break
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (delete entry): {sh_exc}")
 
         return True
     except Exception as exc:
@@ -510,27 +515,27 @@ def set_day_title(trip_row: pd.Series, date_str: str, title: str) -> bool:
             "created_at": now,
         }).execute()
 
-        # Google Sheets upsert (backup)
-        try:
-            ws = _trip_tab(trip_row)
-            records = ws.get_all_records()
-            actual_header = ws.row_values(1)
-            col_index = {col: idx + 1 for idx, col in enumerate(actual_header)}
-            found = False
-            for i, row in enumerate(records):
-                if row.get("entry_id") == eid:
-                    if "destination" in col_index:
-                        ws.update_cell(i + 2, col_index["destination"], title)
-                    found = True
-                    break
-            if not found:
-                values = {col: "" for col in actual_header}
-                values["entry_id"] = eid
-                values["date"] = date_str
-                values["destination"] = title
-                ws.append_row([values.get(col, "") for col in actual_header])
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (day title): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _trip_tab(trip_row)
+                records = ws.get_all_records()
+                actual_header = ws.row_values(1)
+                col_index = {col: idx + 1 for idx, col in enumerate(actual_header)}
+                found = False
+                for i, row in enumerate(records):
+                    if row.get("entry_id") == eid:
+                        if "destination" in col_index:
+                            ws.update_cell(i + 2, col_index["destination"], title)
+                        found = True
+                        break
+                if not found:
+                    values = {col: "" for col in actual_header}
+                    values["entry_id"] = eid
+                    values["date"] = date_str
+                    values["destination"] = title
+                    ws.append_row([values.get(col, "") for col in actual_header])
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (day title): {sh_exc}")
 
         return True
     except Exception as exc:
@@ -591,20 +596,20 @@ def add_expense(
             "created_at": now,
         }).execute()
 
-        # Google Sheets write (backup)
-        try:
-            ws = _spreadsheet().worksheet("Expenses")
-            _ensure_expense_cols(ws)
-            header = ws.row_values(1)
-            data = {
-                "expense_id": expense_id, "trip_id": trip_id,
-                "date": str(entry_date), "category": category,
-                "description": description, "amount": amount,
-                "currency": currency, "links": links, "created_at": now,
-            }
-            ws.append_row([data.get(col, "") for col in header])
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (add expense): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _spreadsheet().worksheet("Expenses")
+                _ensure_expense_cols(ws)
+                header = ws.row_values(1)
+                data = {
+                    "expense_id": expense_id, "trip_id": trip_id,
+                    "date": str(entry_date), "category": category,
+                    "description": description, "amount": amount,
+                    "currency": currency, "links": links, "created_at": now,
+                }
+                ws.append_row([data.get(col, "") for col in header])
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (add expense): {sh_exc}")
 
         return expense_id
     except Exception as exc:
@@ -618,16 +623,16 @@ def delete_expense(expense_id: str) -> bool:
         # Supabase delete (primary)
         _sb().table("expenses").delete().eq("expense_id", expense_id).execute()
 
-        # Google Sheets delete (backup)
-        try:
-            ws = _spreadsheet().worksheet("Expenses")
-            records = ws.get_all_records()
-            for i, row in enumerate(records):
-                if str(row.get("expense_id", "")) == str(expense_id):
-                    ws.delete_rows(i + 2)
-                    break
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (delete expense): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _spreadsheet().worksheet("Expenses")
+                records = ws.get_all_records()
+                for i, row in enumerate(records):
+                    if str(row.get("expense_id", "")) == str(expense_id):
+                        ws.delete_rows(i + 2)
+                        break
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (delete expense): {sh_exc}")
 
         return True
     except Exception as exc:
@@ -702,21 +707,21 @@ def add_task(
             "created_at": now,
         }).execute()
 
-        # Google Sheets write (backup)
-        try:
-            ws = _spreadsheet().worksheet("Tasks")
-            _ensure_task_cols(ws)
-            header = ws.row_values(1)
-            data = {
-                "task_id": task_id, "trip_id": trip_id,
-                "description": description, "notes": notes,
-                "due_date": due_date, "assigned_to": assigned_to,
-                "priority": priority, "links": links,
-                "done": False, "entry_id": entry_id, "created_at": now,
-            }
-            ws.append_row([data.get(col, "") for col in header])
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (add task): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _spreadsheet().worksheet("Tasks")
+                _ensure_task_cols(ws)
+                header = ws.row_values(1)
+                data = {
+                    "task_id": task_id, "trip_id": trip_id,
+                    "description": description, "notes": notes,
+                    "due_date": due_date, "assigned_to": assigned_to,
+                    "priority": priority, "links": links,
+                    "done": False, "entry_id": entry_id, "created_at": now,
+                }
+                ws.append_row([data.get(col, "") for col in header])
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (add task): {sh_exc}")
 
         return True
     except Exception as exc:
@@ -814,16 +819,16 @@ def delete_task(task_id: str) -> bool:
         # Supabase delete (primary)
         _sb().table("tasks").delete().eq("task_id", task_id).execute()
 
-        # Google Sheets delete (backup)
-        try:
-            ws = _spreadsheet().worksheet("Tasks")
-            records = ws.get_all_records()
-            for i, row in enumerate(records):
-                if str(row.get("task_id", "")) == str(task_id):
-                    ws.delete_rows(i + 2)
-                    break
-        except Exception as sh_exc:
-            st.warning(f"Sheets sync warning (delete task): {sh_exc}")
+        if SHEETS_SYNC:
+            try:
+                ws = _spreadsheet().worksheet("Tasks")
+                records = ws.get_all_records()
+                for i, row in enumerate(records):
+                    if str(row.get("task_id", "")) == str(task_id):
+                        ws.delete_rows(i + 2)
+                        break
+            except Exception as sh_exc:
+                st.warning(f"Sheets sync warning (delete task): {sh_exc}")
 
         return True
     except Exception as exc:
