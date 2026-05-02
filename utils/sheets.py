@@ -840,7 +840,7 @@ def delete_task(task_id: str) -> bool:
 # Analysis CRUD  (Supabase only — AI agent reports + findings)
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANALYSIS_SECTIONS = ("logistics", "gas", "tasks")
+ANALYSIS_SECTIONS = ("logistics", "pace", "gas", "financial", "tasks")
 ANALYSIS_TERMINAL = ("completed", "failed")
 
 
@@ -848,15 +848,15 @@ def insert_analysis_report(report_id: str, trip_id: str, created_by: str) -> boo
     """Create a fresh report row with all sections set to 'running'."""
     try:
         now = datetime.now().isoformat(timespec="seconds")
-        _sb().table("analysis_reports").insert({
-            "report_id":        report_id,
-            "trip_id":          trip_id,
-            "created_at":       now,
-            "created_by":       created_by,
-            "logistics_status": "running",
-            "gas_status":       "running",
-            "tasks_status":     "running",
-        }).execute()
+        row = {
+            "report_id":  report_id,
+            "trip_id":    trip_id,
+            "created_at": now,
+            "created_by": created_by,
+        }
+        for section in ANALYSIS_SECTIONS:
+            row[f"{section}_status"] = "running"
+        _sb().table("analysis_reports").insert(row).execute()
         return True
     except Exception as exc:
         st.error(f"Error creating analysis report: {exc}")
@@ -866,7 +866,7 @@ def insert_analysis_report(report_id: str, trip_id: str, created_by: str) -> boo
 def update_report_section(report_id: str, section: str, **fields) -> bool:
     """Update one section's status / summary / error on a report.
 
-    `section` must be one of: 'logistics', 'gas', 'tasks'.
+    `section` must be one of ANALYSIS_SECTIONS.
     Allowed kwargs: status, summary, error.
     """
     if section not in ANALYSIS_SECTIONS:
@@ -885,7 +885,11 @@ def update_report_section(report_id: str, section: str, **fields) -> bool:
 
 
 def get_running_report(trip_id: str) -> dict | None:
-    """Return the latest report for the trip if ANY section is still running."""
+    """Return the latest report for the trip if ANY section is still running.
+
+    NOTE: only checks columns that are present in the row. New sections that
+    haven't been migrated into the table yet won't trip the running check.
+    """
     try:
         resp = (
             _sb().table("analysis_reports")
@@ -898,8 +902,10 @@ def get_running_report(trip_id: str) -> dict | None:
         if not resp.data:
             return None
         row = resp.data[0]
-        if any(str(row.get(f"{s}_status", "")) == "running" for s in ANALYSIS_SECTIONS):
-            return row
+        for s in ANALYSIS_SECTIONS:
+            col = f"{s}_status"
+            if col in row and str(row.get(col, "")) == "running":
+                return row
         return None
     except Exception:
         return None

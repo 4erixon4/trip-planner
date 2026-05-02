@@ -19,15 +19,17 @@ from utils.sheets import (
     get_running_report,
 )
 from utils.config import cfg
-from views._shared import trip_picker, cached_itinerary
+from views._shared import trip_picker, cached_itinerary, priority_badge
 
 # ─── Section metadata ─────────────────────────────────────────────────────────
 
 SECTIONS: list[tuple[str, str, str, str]] = [
     # (key, label, material icon, category-in-findings)
-    ("logistics", "Logistics",          "schedule",        "logistics"),
+    ("logistics", "Logistics",          "schedule",          "logistics"),
+    ("pace",      "Pace Adviser",       "speed",             "pace"),
     ("gas",       "Gas & Distance",     "local_gas_station", "gas"),
-    ("tasks",     "Tasks & Equipment",  "task_alt",        "tasks"),
+    ("financial", "Financial",          "payments",          "financial"),
+    ("tasks",     "Tasks & Equipment",  "task_alt",          "tasks"),
 ]
 
 _STATUS_ICON = {
@@ -44,19 +46,23 @@ _SEVERITY_BADGE = {
 }
 
 _KIND_LABEL = {
-    "append_text":      "Append note to destination",
-    "append_bullets":   "Append bullets to destination",
-    "create_task":      "Create task",
-    "create_equipment": "Add equipment item",
-    "note":             "Informational",
+    "append_text":        "Append note to destination",
+    "append_bullets":     "Append bullets to destination",
+    "create_task":        "Create task",
+    "create_equipment":   "Add equipment item",
+    "update_entry_price": "Update destination price",
+    "create_expense":     "Add expense",
+    "note":               "Informational",
 }
 
 _KIND_ICON = {
-    "append_text":      "edit_note",
-    "append_bullets":   "format_list_bulleted",
-    "create_task":      "checklist",
-    "create_equipment": "luggage",
-    "note":             "info",
+    "append_text":        "edit_note",
+    "append_bullets":     "format_list_bulleted",
+    "create_task":        "checklist",
+    "create_equipment":   "luggage",
+    "update_entry_price": "payments",
+    "create_expense":     "receipt_long",
+    "note":               "info",
 }
 
 
@@ -122,13 +128,34 @@ def _render_finding(
             bits = []
             pri = str(payload.get("priority", "")).strip()
             if pri:
-                bits.append(f":material/flag: {pri}")
+                bits.append(f"{priority_badge(pri)} {pri}")
             due = str(payload.get("due_date", "") or "").strip()
             if due:
                 bits.append(f":material/event: {due}")
             assigned = str(payload.get("assigned_to", "") or "").strip()
             if assigned:
                 bits.append(f":material/person: {assigned}")
+            if bits:
+                st.caption("  ·  ".join(bits))
+
+        if kind == "update_entry_price":
+            new_price = str(payload.get("price", "")).strip()
+            new_curr  = str(payload.get("currency", "")).strip()
+            if new_price:
+                st.caption(f":material/payments: New price: **{new_price} {new_curr}**")
+
+        if kind == "create_expense":
+            bits = []
+            cat = str(payload.get("category", "")).strip()
+            if cat:
+                bits.append(f":material/category: {cat}")
+            amt = payload.get("amount", "")
+            curr = str(payload.get("currency", "") or "").strip()
+            if amt:
+                bits.append(f":material/payments: **{amt} {curr}**")
+            edate = str(payload.get("date", "") or "").strip()
+            if edate:
+                bits.append(f":material/event: {edate}")
             if bits:
                 st.caption("  ·  ".join(bits))
 
@@ -194,7 +221,7 @@ def _render_section(
     status  = str(report.get(f"{section_key}_status", "pending"))
     summary = str(report.get(f"{section_key}_summary", "") or "")
     error   = str(report.get(f"{section_key}_error", "") or "")
-    status_icon = _STATUS_ICON.get(status, _STATUS_ICON["pending"])
+    status_glyph = _STATUS_ICON.get(status, _STATUS_ICON["pending"])
 
     findings_df = list_findings(report["report_id"], category=category)
     pending_df  = (
@@ -204,19 +231,33 @@ def _render_section(
         findings_df[findings_df["status"] != "pending"] if not findings_df.empty else pd.DataFrame()
     )
 
-    with st.container(border=True):
-        with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute"):
-            st.markdown(f"##### {status_icon} :material/{icon}: {label}")
-            count_lbl = ""
-            if status == "completed":
-                count_lbl = f"{len(pending_df)} open · {len(actioned_df)} actioned"
-            elif status == "running":
-                count_lbl = "analysing…"
-            elif status == "failed":
-                count_lbl = "failed"
-            if count_lbl:
-                st.caption(count_lbl)
+    # Build the expander label with status + counts
+    if status == "running":
+        tail = "analysing…"
+    elif status == "failed":
+        tail = ":red[failed]"
+    elif status == "completed":
+        if len(pending_df) > 0:
+            tail = f"**{len(pending_df)} open**" + (
+                f"  ·  {len(actioned_df)} actioned" if len(actioned_df) else ""
+            )
+        elif len(actioned_df) > 0:
+            tail = f":gray[{len(actioned_df)} actioned]"
+        else:
+            tail = ":gray[clean — nothing to flag]"
+    else:
+        tail = ":gray[pending]"
 
+    expander_label = f"{status_glyph} **{label}**  ·  {tail}"
+
+    # Auto-open while running, on failure, or when there are pending findings
+    default_expanded = (
+        status == "running"
+        or status == "failed"
+        or (status == "completed" and len(pending_df) > 0)
+    )
+
+    with st.expander(expander_label, icon=f":material/{icon}:", expanded=default_expanded):
         if status == "running":
             st.info("Working on it… results will appear here when ready.",
                     icon=":material/progress_activity:")
@@ -237,10 +278,13 @@ def _render_section(
             _render_finding(finding, entries_map, user_email)
 
         if not actioned_df.empty:
-            with st.expander(
-                f"Actioned ({len(actioned_df)})",
-                icon=":material/history:",
-            ):
+            show_key = f"show_actioned_{report['report_id']}_{section_key}"
+            show_actioned = st.toggle(
+                f":material/history: Show {len(actioned_df)} actioned",
+                key=show_key,
+                value=False,
+            )
+            if show_actioned:
                 for _, finding in actioned_df.iterrows():
                     _render_finding(finding, entries_map, user_email)
 
@@ -356,5 +400,11 @@ def render() -> None:
     st.subheader("Latest report", anchor=False, divider="gray")
     _live_report_card(latest["report_id"], trip_id, user_email)
 
-    with st.expander("Past reports", icon=":material/history:"):
+    show_history = st.toggle(
+        ":material/history: Show past reports",
+        key=f"show_history_{trip_id}",
+        value=False,
+    )
+    if show_history:
+        st.subheader("Past reports", anchor=False, divider="gray")
         _history_view(trip_id, user_email, exclude_report_id=str(latest["report_id"]))

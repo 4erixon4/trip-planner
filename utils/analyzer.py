@@ -1,10 +1,12 @@
 """
-Logistical AI Helper — async 3-stage report agent.
+Logistical AI Helper — async 5-stage report agent.
 
 Stages (each runs in its own background thread):
   1. logistics  — Gemini Pro (JSON)         : time mismatches, missing meals
-  2. gas        — Gemini Pro + Google Search: km commute + fuel suggestions
-  3. tasks      — Gemini Flash (JSON)        : missing prep tasks & equipment
+  2. pace       — Gemini Pro (JSON)         : trip intensity / day-by-day pace tips
+  3. gas        — Gemini Pro + Google Search: km commute + fuel suggestions
+  4. financial  — Gemini Pro (JSON)         : missing prices/expenses, budget gaps
+  5. tasks      — Gemini Flash (JSON)       : missing prep tasks & equipment
 
 Lifecycle (status field per section in `analysis_reports`):
     pending → running → completed  (or → failed with *_error populated)
@@ -14,19 +16,25 @@ Required Supabase schema  (run once in the SQL editor)
 ──────────────────────────────────────────────────────────────────────────────
 
 create table if not exists analysis_reports (
-  report_id        text primary key,
-  trip_id          text not null references trips(trip_id) on delete cascade,
-  created_at       timestamptz not null default now(),
-  created_by       text,
-  logistics_status text not null default 'pending',
+  report_id         text primary key,
+  trip_id           text not null references trips(trip_id) on delete cascade,
+  created_at        timestamptz not null default now(),
+  created_by        text,
+  logistics_status  text not null default 'pending',
   logistics_summary text default '',
-  logistics_error  text default '',
-  gas_status       text not null default 'pending',
-  gas_summary      text default '',
-  gas_error        text default '',
-  tasks_status     text not null default 'pending',
-  tasks_summary    text default '',
-  tasks_error      text default ''
+  logistics_error   text default '',
+  gas_status        text not null default 'pending',
+  gas_summary       text default '',
+  gas_error         text default '',
+  tasks_status      text not null default 'pending',
+  tasks_summary     text default '',
+  tasks_error       text default '',
+  pace_status       text not null default 'pending',
+  pace_summary      text default '',
+  pace_error        text default '',
+  financial_status  text not null default 'pending',
+  financial_summary text default '',
+  financial_error   text default ''
 );
 create index if not exists analysis_reports_trip_idx
   on analysis_reports(trip_id, created_at desc);
@@ -48,6 +56,18 @@ create table if not exists analysis_findings (
 );
 create index if not exists analysis_findings_report_idx
   on analysis_findings(report_id, category, status);
+
+──────────────────────────────────────────────────────────────────────────────
+Migration — adding the pace + financial sections to an existing install
+──────────────────────────────────────────────────────────────────────────────
+
+alter table analysis_reports
+  add column if not exists pace_status      text not null default 'pending',
+  add column if not exists pace_summary     text default '',
+  add column if not exists pace_error       text default '',
+  add column if not exists financial_status text not null default 'pending',
+  add column if not exists financial_summary text default '',
+  add column if not exists financial_error  text default '';
 """
 
 from __future__ import annotations
@@ -62,10 +82,13 @@ import pandas as pd
 
 from utils.gemini_helper import MODEL, MODEL_PRO, generate_structured
 from utils.sheets import (
+    EXPENSE_CATEGORIES,
     _sb,
     add_equipment_item,
+    add_expense,
     add_task,
     get_equipment,
+    get_expenses,
     get_finding,
     get_itinerary,
     get_itinerary_entry,
@@ -82,7 +105,15 @@ from utils.config import cfg
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-VALID_KINDS    = {"append_text", "append_bullets", "create_task", "create_equipment", "note"}
+VALID_KINDS = {
+    "append_text",
+    "append_bullets",
+    "create_task",
+    "create_equipment",
+    "update_entry_price",
+    "create_expense",
+    "note",
+}
 VALID_SEVERITY = {"info", "warning", "error"}
 TASK_PRIORITIES = ("Normal", "Medium", "High")
 
@@ -113,6 +144,11 @@ _FINDINGS_SCHEMA: dict = {
                             "due_date":    {"type": "string"},
                             "links":       {"type": "string"},
                             "owner":       {"type": "string"},
+                            "price":       {"type": "string"},
+                            "currency":    {"type": "string"},
+                            "amount":      {"type": "number"},
+                            "category":    {"type": "string"},
+                            "date":        {"type": "string"},
                         },
                     },
                 },
@@ -127,19 +163,27 @@ _SHARED_PROMPT_RULES = """
 Output rules (STRICT):
 - Respond with a single JSON object matching the schema. No prose outside JSON.
 - Each finding's `kind` must be one of:
-    "append_text"     — short text/sentence to append to a destination's "Additional info"
-    "append_bullets"  — markdown bullet list to append to a destination's "Additional info"
-    "create_task"     — a new to-do item for the trip
-    "create_equipment"— a new packing-list item for someone
-    "note"            — informational only, nothing to apply
+    "append_text"        — short text/sentence to append to a destination's "Additional info"
+    "append_bullets"     — markdown bullet list to append to a destination's "Additional info"
+    "create_task"        — a new to-do item for the trip
+    "create_equipment"   — a new packing-list item for someone
+    "update_entry_price" — change the price/currency on an existing destination
+    "create_expense"     — record a new expense in the Expenses page
+    "note"               — informational only, nothing to apply
 - For append_text / append_bullets, MUST set `target_entry_id` to one of the
   entry_ids from the itinerary listed below. The text/bullets goes in payload.content.
 - For create_task, payload MUST include: description, priority (Normal|Medium|High).
   Optional: notes, due_date (YYYY-MM-DD), links, target_entry_id.
 - For create_equipment, payload MUST include: description. Optional: owner (email).
+- For update_entry_price, MUST set target_entry_id and payload.price (string)
+  and payload.currency (e.g. USD, EUR, ILS).
+- For create_expense, payload MUST include: amount (number), currency (string),
+  category (one of: Food & Dining, Transport, Accommodation, Activities & Tours,
+  Shopping, Health, Communication, Misc), description (string).
+  Optional: date (YYYY-MM-DD, defaults to trip start_date).
 - Severity: "info" (helpful), "warning" (likely problem), "error" (definite gap).
 - Keep titles short (≤ 80 chars). Be specific, not generic.
-- Do NOT duplicate existing tasks or equipment items already listed in context.
+- Do NOT duplicate existing tasks, equipment items, or expenses already listed in context.
 """
 
 # ─── Trip context builder ────────────────────────────────────────────────────
@@ -200,6 +244,18 @@ def _build_trip_context(trip_id: str) -> dict:
             eq_df["description"].astype(str).tolist() if not eq_df.empty else []
         )
 
+    expenses: list[dict] = []
+    exp_df = get_expenses(trip_id)
+    if not exp_df.empty:
+        for _, e in exp_df.iterrows():
+            expenses.append({
+                "date":        str(e.get("date", "") or ""),
+                "category":    str(e.get("category", "") or ""),
+                "description": str(e.get("description", "") or ""),
+                "amount":      str(e.get("amount", "") or ""),
+                "currency":    str(e.get("currency", "") or ""),
+            })
+
     return {
         "trip": {
             "trip_id":    str(trip["trip_id"]),
@@ -209,10 +265,12 @@ def _build_trip_context(trip_id: str) -> dict:
             "end_date":   str(trip["end_date"]),
             "notes":      str(trip.get("notes", "") or ""),
         },
-        "day_titles": day_titles,
-        "entries":    entries,
-        "tasks":      tasks,
-        "equipment":  equipment,
+        "day_titles":      day_titles,
+        "entries":         entries,
+        "tasks":           tasks,
+        "equipment":       equipment,
+        "expenses":        expenses,
+        "expense_categories": list(EXPENSE_CATEGORIES),
         "approved_emails": list(cfg.approved_emails),
     }
 
@@ -281,7 +339,7 @@ def _section_to_completed(report_id: str, section: str, summary: str) -> None:
     )
 
 
-# ─── The three runners ───────────────────────────────────────────────────────
+# ─── The five runners ────────────────────────────────────────────────────────
 
 
 def _run_logistics(report_id: str, ctx: dict) -> None:
@@ -296,8 +354,8 @@ def _run_logistics(report_id: str, ctx: dict) -> None:
             " - Missing meals: breakfast is OPTIONAL, but every day MUST have an "
             "   identifiable LUNCH and DINNER (look for restaurant icons / words).\n"
             " - Day overpacking, illogical ordering, or dates outside the trip range.\n"
-            "DO NOT comment on gas, distance to fuel stations, packing list, or tasks "
-            "— other agents handle those.\n"
+            "DO NOT comment on gas, distance to fuel stations, packing list, tasks, "
+            "money, prices, or pace — other agents handle those.\n"
             f"{_SHARED_PROMPT_RULES}\n"
             f"Trip data (JSON):\n{_ctx_to_text(ctx)}"
         )
@@ -309,6 +367,86 @@ def _run_logistics(report_id: str, ctx: dict) -> None:
         _section_to_completed(report_id, "logistics", str(parsed.get("summary", "")))
     except Exception:
         _section_to_failure(report_id, "logistics", traceback.format_exc())
+
+
+def _run_pace(report_id: str, ctx: dict) -> None:
+    try:
+        prompt = (
+            "You are a trip-pace adviser. Your PRIMARY job is to surface SMALL, "
+            "ACTIONABLE adjustments that make the trip flow better while preserving "
+            "the planned destinations and overall logic.\n"
+            "\n"
+            "Ground rules — read carefully:\n"
+            " - The traveller WANTS an intense trip. 'Easy' is NOT the goal. NEVER "
+            "   suggest removing destinations, shortening must-see stops, or 'taking "
+            "   it easy' just because a day is full.\n"
+            " - SMALL fix examples (these MUST use 'append_text' or 'append_bullets' "
+            "   targeting the specific entry where the tip applies):\n"
+            "     · 'Leave 20 min earlier to beat the queue at gate'\n"
+            "     · 'Pre-book timed-entry tickets — saves ~30 min on arrival'\n"
+            "     · 'Swap sit-down lunch here for grab-and-go to keep schedule'\n"
+            "     · 'Add a 15-min coffee break between X and Y'\n"
+            "     · 'Hit this stop before noon — it gets crowded after lunch'\n"
+            "     · 'Hydrate / pack a snack — no food spots between leg A and B'\n"
+            "   These are nudges of minutes-to-an-hour, not structural rewrites.\n"
+            " - BIG advice examples (these MUST be 'note', NOT actionable — the "
+            "   user reads them but cannot one-click apply):\n"
+            "     · 'Consider swapping Day 3 and Day 5 entirely'\n"
+            "     · 'This trip would breathe better if Day 7 became 2 days'\n"
+            "     · 'Day 4 is impossible as planned — would need a 4am start AND "
+            "        skipping at least one stop'\n"
+            "     · Any suggestion that requires moving entries between days, "
+            "        adding/removing destinations, or major time blocks.\n"
+            "   Set severity='warning' or 'error' for impossible days, 'info' for "
+            "   strategic suggestions.\n"
+            " - Aim for MOSTLY small actionable findings. Big-picture notes should "
+            "   be the exception, used only when a small tip cannot solve the issue.\n"
+            "DO NOT touch prices, gas, equipment, or to-do tasks.\n"
+            f"{_SHARED_PROMPT_RULES}\n"
+            f"Trip data (JSON):\n{_ctx_to_text(ctx)}"
+        )
+        parsed = generate_structured(MODEL_PRO, prompt, _FINDINGS_SCHEMA, use_search=False)
+        if "_error" in parsed:
+            _section_to_failure(report_id, "pace", parsed["_error"])
+            return
+        _persist_findings(report_id, "pace", parsed)
+        _section_to_completed(report_id, "pace", str(parsed.get("summary", "")))
+    except Exception:
+        _section_to_failure(report_id, "pace", traceback.format_exc())
+
+
+def _run_financial(report_id: str, ctx: dict) -> None:
+    try:
+        prompt = (
+            "You are the trip's financial sanity-checker. Scan the itinerary and "
+            "the recorded expenses, then surface BUDGET GAPS the traveller likely "
+            "forgot.\n"
+            "Look for:\n"
+            " - Itinerary entries with NO price set that almost certainly cost money "
+            "   (paid attractions, guided tours, paid parking, ferries, theme parks). "
+            "   Suggest a realistic price using your knowledge of typical entry fees "
+            "   for that destination → emit 'update_entry_price' with payload.price "
+            "   and payload.currency.\n"
+            " - Itinerary entries whose existing price looks WAY off vs. the typical "
+            "   real-world cost → 'update_entry_price' with corrected value.\n"
+            " - Categories of spend missing from the Expenses page that any trip of "
+            "   this shape needs (e.g. car rental, fuel budget, travel insurance, "
+            "   eSIM, tolls, airport transfers, tips). Emit 'create_expense' with "
+            "   amount, currency, category (must be one of the listed expense_categories), "
+            "   description, and date (default to trip start_date).\n"
+            "DO NOT duplicate expenses already in the 'expenses' list. DO NOT touch "
+            "tasks, equipment, gas-station selection, pace, or logistics.\n"
+            f"{_SHARED_PROMPT_RULES}\n"
+            f"Trip data (JSON):\n{_ctx_to_text(ctx)}"
+        )
+        parsed = generate_structured(MODEL_PRO, prompt, _FINDINGS_SCHEMA, use_search=False)
+        if "_error" in parsed:
+            _section_to_failure(report_id, "financial", parsed["_error"])
+            return
+        _persist_findings(report_id, "financial", parsed)
+        _section_to_completed(report_id, "financial", str(parsed.get("summary", "")))
+    except Exception:
+        _section_to_failure(report_id, "financial", traceback.format_exc())
 
 
 def _run_gas(report_id: str, ctx: dict) -> None:
@@ -394,7 +532,7 @@ def start_analysis(trip_id: str, user_email: str) -> str | None:
     if not insert_analysis_report(report_id, trip_id, user_email):
         return None
 
-    for target in (_run_logistics, _run_gas, _run_tasks):
+    for target in (_run_logistics, _run_pace, _run_gas, _run_financial, _run_tasks):
         threading.Thread(
             target=target,
             args=(report_id, ctx),
@@ -406,10 +544,11 @@ def start_analysis(trip_id: str, user_email: str) -> str | None:
 def is_report_running(report: dict | None) -> bool:
     if not report:
         return False
-    return any(
-        str(report.get(f"{s}_status", "")) == "running"
-        for s in ("logistics", "gas", "tasks")
-    )
+    for s in ("logistics", "pace", "gas", "financial", "tasks"):
+        col = f"{s}_status"
+        if col in report and str(report.get(col, "")) == "running":
+            return True
+    return False
 
 
 # ─── Apply / dismiss ─────────────────────────────────────────────────────────
@@ -452,7 +591,9 @@ def apply_finding(finding_id: str, user_email: str, owner_override: str = "") ->
                 return False, "Empty content"
             header = {
                 "logistics": "🔍 Logistics check",
+                "pace":      "🏃 Pace tip",
                 "gas":       "⛽ Fuel note",
+                "financial": "💰 Budget note",
                 "tasks":     "🤖 AI suggestion",
                 "equipment": "🤖 AI suggestion",
             }.get(category, "🤖 AI suggestion")
@@ -510,6 +651,60 @@ def apply_finding(finding_id: str, user_email: str, owner_override: str = "") ->
             )
             if not add_equipment_item(trip_id, owner, desc):
                 return False, "Failed to add equipment item"
+
+        elif kind == "update_entry_price":
+            if not target:
+                return False, "Finding has no target destination"
+            entry = get_itinerary_entry(target)
+            if not entry:
+                return False, "Target destination no longer exists"
+            new_price    = str(payload.get("price", "")).strip()
+            new_currency = str(payload.get("currency", "")).strip() or str(entry.get("currency", "USD"))
+            if not new_price:
+                return False, "Empty price"
+            trip_row = pd.Series({
+                "trip_id":   str(entry.get("trip_id", "")),
+                "sheet_tab": "",
+            })
+            if not update_itinerary_entry(
+                trip_row, target, price=new_price, currency=new_currency,
+            ):
+                return False, "Failed to update destination price"
+
+        elif kind == "create_expense":
+            report_id = str(f.get("report_id", ""))
+            rep = _sb().table("analysis_reports").select("trip_id").eq("report_id", report_id).limit(1).execute()
+            trip_id = rep.data[0]["trip_id"] if rep.data else ""
+            if not trip_id:
+                return False, "Trip not found"
+            try:
+                amount = float(payload.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if amount <= 0:
+                return False, "Amount must be positive"
+            category = str(payload.get("category", "")).strip()
+            if category not in EXPENSE_CATEGORIES:
+                category = "Misc"
+            description = str(payload.get("description", "")).strip() or str(f.get("title", "")).strip()
+            if not description:
+                return False, "Expense description missing"
+            currency = str(payload.get("currency", "")).strip() or "USD"
+            # Default date to trip start if model didn't supply one
+            date_val = str(payload.get("date", "")).strip()
+            if not date_val:
+                trip_resp = _sb().table("trips").select("start_date").eq("trip_id", trip_id).limit(1).execute()
+                date_val = str(trip_resp.data[0]["start_date"]) if trip_resp.data else ""
+            if not add_expense(
+                trip_id      = trip_id,
+                entry_date   = date_val,
+                category     = category,
+                description  = description,
+                amount       = amount,
+                currency     = currency,
+                links        = str(payload.get("links", "") or ""),
+            ):
+                return False, "Failed to add expense"
 
         elif kind == "note":
             pass  # nothing to apply, just mark accepted

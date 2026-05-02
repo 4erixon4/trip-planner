@@ -19,6 +19,7 @@ from utils.gemini_helper import enrich_destination_info
 from views._shared import (
     cached_trips, cached_itinerary, cached_tasks, trip_day_number, format_price,
     parse_link, trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
+    priority_badge,
 )
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "ILS", "AUD", "CAD", "Other"]
@@ -361,7 +362,6 @@ def _entry_card(
 
         # ── Linked tasks ─────────────────────────────────────────────────────
         if tasks_df is not None and not tasks_df.empty:
-            _BADGE = {"High": "🔴", "Medium": "🟡", "Normal": "⚪"}
             lbl = f"Tasks ({len(linked_tasks)})" if not linked_tasks.empty else "Link tasks"
             with st.expander(lbl, icon=":material/checklist:"):
                 # Currently linked tasks
@@ -370,7 +370,7 @@ def _entry_card(
                     tdesc = str(t.get("description", "")).strip()
                     tdone = bool(t.get("done", False))
                     pri   = str(t.get("priority", "Normal"))
-                    badge = _BADGE.get(pri, "⚪")
+                    badge = priority_badge(pri)
                     text  = f":gray[~~{badge} {tdesc}~~]" if tdone else f"{badge} {tdesc}"
                     with st.container(
                         horizontal=True,
@@ -387,7 +387,7 @@ def _entry_card(
                 # Multi-select to add new links
                 if not unlinked_tasks.empty:
                     opts = {
-                        str(t["task_id"]): f"{_BADGE.get(str(t.get('priority','Normal')),'⚪')} {str(t.get('description',''))}"
+                        str(t["task_id"]): f"{priority_badge(str(t.get('priority','Normal')))} {str(t.get('description',''))}"
                         for _, t in unlinked_tasks.iterrows()
                     }
                     selected = st.multiselect(

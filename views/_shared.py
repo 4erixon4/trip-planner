@@ -8,6 +8,25 @@ from utils.sheets import get_trips, get_itinerary, get_tasks
 
 _DAY_TITLE_PREFIX = "daytitle_"
 
+# ─── Task priority badges (Material icons with colors) ───────────────────────
+PRIORITY_ORDER: dict[str, int] = {"High": 0, "Medium": 1, "Normal": 2}
+
+PRIORITY_BADGE: dict[str, str] = {
+    "High":   ":red[:material/circle:]",
+    "Medium": ":orange[:material/circle:]",
+    "Normal": ":gray[:material/radio_button_unchecked:]",
+}
+
+
+def priority_badge(priority: str) -> str:
+    """Return a Material-icon priority badge (colored) for a given priority."""
+    return PRIORITY_BADGE.get(str(priority).strip(), PRIORITY_BADGE["Normal"])
+
+
+def priority_sort_key(priority: str) -> int:
+    return PRIORITY_ORDER.get(str(priority).strip(), 2)
+
+
 # Material icon options for destination type
 DESTINATION_ICONS: dict[str, str] = {
     "location_on":      "Place",

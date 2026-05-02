@@ -5,20 +5,22 @@ import pandas as pd
 
 from utils.sheets import add_task, delete_task, mark_task_done
 from utils.config import cfg
-from views._shared import trip_picker, parse_link, cached_tasks
+from views._shared import (
+    trip_picker, parse_link, cached_tasks,
+    priority_badge, priority_sort_key,
+)
 
 PRIORITIES = ["Normal", "Medium", "High"]
 
-_PRIORITY_ORDER = {"High": 0, "Medium": 1, "Normal": 2}
-
 
 def _priority_label(desc: str, priority: str) -> str:
-    """Return markdown-colored label for a task checkbox."""
+    """Return markdown label with colored Material-icon priority badge."""
+    badge = priority_badge(priority)
     if priority == "High":
-        return f"🔴 :red[**{desc}**]"
+        return f"{badge} :red[**{desc}**]"
     if priority == "Medium":
-        return f"🟡 :orange[**{desc}**]"
-    return f"⚪ {desc}"
+        return f"{badge} :orange[**{desc}**]"
+    return f"{badge} {desc}"
 
 
 def _add_task_form(trip_id: str, assignees: list[str]) -> None:
@@ -93,9 +95,7 @@ def render() -> None:
 
     # Sort: priority first (High → Medium → Normal), then me-first, then alphabetical
     tasks_df = tasks_df.copy()
-    tasks_df["_sort_p"] = tasks_df["priority"].apply(
-        lambda p: _PRIORITY_ORDER.get(str(p).strip(), 2)
-    )
+    tasks_df["_sort_p"] = tasks_df["priority"].apply(priority_sort_key)
     tasks_df["_sort_a"] = tasks_df["assigned_to"].apply(
         lambda a: ("0" if str(a) == me else "1") + str(a).lower()
     )

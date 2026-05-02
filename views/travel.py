@@ -11,6 +11,7 @@ from utils.images import get_entry_images
 from views._shared import (
     cached_itinerary, cached_tasks, trip_day_number, format_price, parse_link,
     trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
+    priority_badge, priority_sort_key,
 )
 
 # ── Icon → emoji map for the HTML export ─────────────────────────────────────
@@ -322,11 +323,10 @@ def _entry_card(entry: pd.Series, linked_tasks: pd.DataFrame | None = None) -> N
 
         # Linked active tasks
         if linked_tasks is not None and not linked_tasks.empty:
-            _PRI = {"High": 0, "Medium": 1, "Normal": 2}
             active = linked_tasks[~linked_tasks["done"]] if "done" in linked_tasks.columns else linked_tasks
             if not active.empty:
                 active = active.copy()
-                active["_p"] = active["priority"].apply(lambda p: _PRI.get(str(p).strip(), 2))
+                active["_p"] = active["priority"].apply(priority_sort_key)
                 active = active.sort_values("_p").drop(columns=["_p"])
                 with st.expander(f"Tasks ({len(active)})", icon=":material/checklist:"):
                     for _, t in active.iterrows():
@@ -334,8 +334,10 @@ def _entry_card(entry: pd.Series, linked_tasks: pd.DataFrame | None = None) -> N
                         tnotes   = str(t.get("notes", "") or "").strip()
                         tdue     = str(t.get("due_date", "") or "").strip()
                         assignee = str(t.get("assigned_to", "")).strip()
-                        suffix = f"  :gray[— {assignee}]" if assignee and assignee != "Unassigned" else ""
-                        st.markdown(f"- **{tdesc}**{suffix}")
+                        pri      = str(t.get("priority", "Normal"))
+                        badge    = priority_badge(pri)
+                        suffix   = f"  :gray[— {assignee}]" if assignee and assignee != "Unassigned" else ""
+                        st.markdown(f"- {badge} **{tdesc}**{suffix}")
                         if tnotes:
                             st.caption(f"  {tnotes}")
                         if tdue:
