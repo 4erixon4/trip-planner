@@ -834,3 +834,213 @@ def delete_task(task_id: str) -> bool:
     except Exception as exc:
         st.error(f"Error deleting task: {exc}")
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Analysis CRUD  (Supabase only — AI agent reports + findings)
+# ─────────────────────────────────────────────────────────────────────────────
+
+ANALYSIS_SECTIONS = ("logistics", "gas", "tasks")
+ANALYSIS_TERMINAL = ("completed", "failed")
+
+
+def insert_analysis_report(report_id: str, trip_id: str, created_by: str) -> bool:
+    """Create a fresh report row with all sections set to 'running'."""
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        _sb().table("analysis_reports").insert({
+            "report_id":        report_id,
+            "trip_id":          trip_id,
+            "created_at":       now,
+            "created_by":       created_by,
+            "logistics_status": "running",
+            "gas_status":       "running",
+            "tasks_status":     "running",
+        }).execute()
+        return True
+    except Exception as exc:
+        st.error(f"Error creating analysis report: {exc}")
+        return False
+
+
+def update_report_section(report_id: str, section: str, **fields) -> bool:
+    """Update one section's status / summary / error on a report.
+
+    `section` must be one of: 'logistics', 'gas', 'tasks'.
+    Allowed kwargs: status, summary, error.
+    """
+    if section not in ANALYSIS_SECTIONS:
+        return False
+    payload: dict[str, str] = {}
+    if "status"  in fields: payload[f"{section}_status"]  = str(fields["status"])
+    if "summary" in fields: payload[f"{section}_summary"] = str(fields["summary"] or "")
+    if "error"   in fields: payload[f"{section}_error"]   = str(fields["error"]   or "")
+    if not payload:
+        return False
+    try:
+        _sb().table("analysis_reports").update(payload).eq("report_id", report_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_running_report(trip_id: str) -> dict | None:
+    """Return the latest report for the trip if ANY section is still running."""
+    try:
+        resp = (
+            _sb().table("analysis_reports")
+            .select("*")
+            .eq("trip_id", trip_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            return None
+        row = resp.data[0]
+        if any(str(row.get(f"{s}_status", "")) == "running" for s in ANALYSIS_SECTIONS):
+            return row
+        return None
+    except Exception:
+        return None
+
+
+def get_latest_report(trip_id: str) -> dict | None:
+    """Return the most recently created report row for this trip (any status)."""
+    try:
+        resp = (
+            _sb().table("analysis_reports")
+            .select("*")
+            .eq("trip_id", trip_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def get_report(report_id: str) -> dict | None:
+    try:
+        resp = (
+            _sb().table("analysis_reports")
+            .select("*")
+            .eq("report_id", report_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def list_reports(trip_id: str) -> pd.DataFrame:
+    """Return all reports for a trip, newest first."""
+    try:
+        resp = (
+            _sb().table("analysis_reports")
+            .select("*")
+            .eq("trip_id", trip_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def insert_finding(
+    finding_id:      str,
+    report_id:       str,
+    category:        str,
+    kind:            str,
+    title:           str,
+    description:     str = "",
+    severity:        str = "info",
+    target_entry_id: str = "",
+    payload:         dict | None = None,
+) -> bool:
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        _sb().table("analysis_findings").insert({
+            "finding_id":      finding_id,
+            "report_id":       report_id,
+            "category":        category,
+            "kind":            kind,
+            "title":           title,
+            "description":     description,
+            "severity":        severity,
+            "target_entry_id": target_entry_id or "",
+            "payload":         payload or {},
+            "status":          "pending",
+            "created_at":      now,
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def update_finding_status(finding_id: str, status: str, user: str) -> bool:
+    """Mark a finding accepted / dismissed (or back to pending)."""
+    try:
+        _sb().table("analysis_findings").update({
+            "status":   status,
+            "acted_at": datetime.now().isoformat(timespec="seconds"),
+            "acted_by": user,
+        }).eq("finding_id", finding_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def list_findings(
+    report_id: str,
+    category:  str | None = None,
+    status:    str | None = None,
+) -> pd.DataFrame:
+    """Return findings for a report, optionally filtered by category / status."""
+    try:
+        q = (
+            _sb().table("analysis_findings")
+            .select("*")
+            .eq("report_id", report_id)
+            .order("created_at")
+        )
+        if category:
+            q = q.eq("category", category)
+        if status:
+            q = q.eq("status", status)
+        resp = q.execute()
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_finding(finding_id: str) -> dict | None:
+    try:
+        resp = (
+            _sb().table("analysis_findings")
+            .select("*")
+            .eq("finding_id", finding_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def get_itinerary_entry(entry_id: str) -> dict | None:
+    """Fetch a single itinerary entry by id (used when applying findings)."""
+    try:
+        resp = (
+            _sb().table("itinerary")
+            .select("*")
+            .eq("entry_id", entry_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None

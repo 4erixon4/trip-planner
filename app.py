@@ -7,7 +7,7 @@ import streamlit as st
 from utils.auth import require_auth
 from utils.sheets import ensure_sheets_exist, _sb
 from utils.images import ensure_bucket_public
-from views import build, travel, expenses, todo, equipment
+from views import build, travel, expenses, todo, equipment, analyze
 
 st.set_page_config(
     page_title="Trip Planner",
@@ -55,9 +55,10 @@ _build_page      = st.Page(build.render,     title="Build",     icon=":material/
 _travel_page     = st.Page(travel.render,    title="Travel",    icon=":material/explore:",      url_path="travel")
 _expenses_page   = st.Page(expenses.render,  title="Expenses",  icon=":material/receipt_long:", url_path="expenses")
 _equipment_page  = st.Page(equipment.render, title="Equipment", icon=":material/luggage:",      url_path="equipment")
+_analyze_page    = st.Page(analyze.render,   title="Analyze",   icon=":material/troubleshoot:", url_path="analyze")
 
 pg = st.navigation(
-    [_build_page, _travel_page, _expenses_page, _todo_page, _equipment_page],
+    [_build_page, _travel_page, _expenses_page, _todo_page, _equipment_page, _analyze_page],
     position="sidebar",
 )
 

@@ -18,8 +18,10 @@ if _venv:
         sys.path.insert(0, _sp)
 
 import google.genai as genai  # noqa: E402
+from google.genai import types as _gt  # noqa: E402
 
-MODEL = "gemini-3-flash-preview"
+MODEL     = "gemini-3-flash-preview"
+MODEL_PRO = "gemini-3-pro-preview"
 
 
 @st.cache_resource
@@ -89,6 +91,65 @@ def enrich_destination_info(
         return (resp.text or "").strip()
     except Exception as exc:
         return f"❌ Enrichment failed: {exc}"
+
+
+def generate_structured(
+    model:           str,
+    prompt:          str,
+    response_schema: dict | typing.Any,
+    use_search:      bool = False,
+) -> dict:
+    """Call Gemini with JSON-mode (structured output) and return the parsed dict.
+
+    - `response_schema` is a Gemini JSON schema (dict or types.Schema). When
+      `use_search=True`, response_schema is IGNORED (the Search tool is mutually
+      exclusive with response_schema in the API), and JSON is requested via the
+      mime-type only — the prompt itself must instruct the model to return JSON.
+    - On any error, returns ``{"_error": "<message>", "summary": "", "findings": []}``
+      so callers can persist a failure without crashing.
+    """
+    try:
+        client = _client()
+
+        if use_search:
+            cfg_kwargs = dict(
+                response_mime_type="application/json",
+                tools=[_gt.Tool(google_search=_gt.GoogleSearch())],
+            )
+        else:
+            cfg_kwargs = dict(
+                response_mime_type="application/json",
+                response_schema=response_schema,
+            )
+
+        config = _gt.GenerateContentConfig(**cfg_kwargs)
+        resp = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+
+        text = (resp.text or "").strip()
+        if not text:
+            return {"_error": "empty response", "summary": "", "findings": []}
+
+        import json as _json
+        try:
+            return _json.loads(text)
+        except _json.JSONDecodeError:
+            # When Search grounding is on the model sometimes wraps JSON in fences
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```", 2)[1]
+                if cleaned.lower().startswith("json"):
+                    cleaned = cleaned[4:]
+                cleaned = cleaned.strip().rstrip("`").strip()
+            try:
+                return _json.loads(cleaned)
+            except Exception as exc:
+                return {"_error": f"invalid JSON: {exc}", "summary": "", "findings": []}
+    except Exception as exc:
+        return {"_error": str(exc), "summary": "", "findings": []}
 
 
 def stream_destination_response(
