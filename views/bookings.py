@@ -376,13 +376,15 @@ def _render_booking_card(
                           vertical_alignment="top"):
             st.markdown(f"### {type_icon} {title}")
             with st.container():
-                st.markdown(f"{status_badge} {status}")
+                with st.container(horizontal=True, horizontal_alignment="right"):
+                    st.markdown(f"{status_badge} {status}")
                 if fc_dt:
                     badge, _color = _format_countdown(fc_dt)
-                    st.markdown(
-                        badge,
-                        help=f"Free until {fc_dt.strftime('%Y-%m-%d %H:%M')}",
-                    )
+                    with st.container(horizontal=True, horizontal_alignment="right"):
+                        st.markdown(
+                            badge,
+                            help=f"Free until {fc_dt.strftime('%Y-%m-%d %H:%M')}",
+                        )
 
         meta_bits = []
         if check_in:
