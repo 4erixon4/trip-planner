@@ -1,6 +1,6 @@
 """Bookings & Reservations page — manage hotels, flights, activities, etc."""
 
-from datetime import date as _date, timedelta as _td
+from datetime import date as _date, datetime as _dt, time as _time, timedelta as _td
 import pandas as pd
 import streamlit as st
 
@@ -39,6 +39,53 @@ def _to_date(s) -> _date | None:
         return _date.fromisoformat(str(s)[:10])
     except (ValueError, TypeError):
         return None
+
+
+def _to_dt(s) -> _dt | None:
+    """Parse an ISO datetime string. Accepts trailing 'Z' and date-only strings."""
+    if not s:
+        return None
+    raw = str(s).strip()
+    if not raw:
+        return None
+    raw = raw.replace("Z", "+00:00")
+    try:
+        return _dt.fromisoformat(raw)
+    except ValueError:
+        try:
+            return _dt.combine(_date.fromisoformat(raw[:10]), _time(23, 59))
+        except ValueError:
+            return None
+
+
+def _format_countdown(deadline: _dt) -> tuple[str, str]:
+    """Return (badge_markdown, color_name). Color: 'green', 'orange', 'red', 'gray'."""
+    now = _dt.now(deadline.tzinfo) if deadline.tzinfo else _dt.now()
+    diff = deadline - now
+
+    if diff.total_seconds() <= 0:
+        return ":gray[:material/lock_clock: Cancellation expired]", "gray"
+
+    total_hours = int(diff.total_seconds() // 3600)
+    days, hours = divmod(total_hours, 24)
+
+    if days >= 1:
+        text = f"{days}d {hours}h"
+    elif hours >= 1:
+        mins = int((diff.total_seconds() % 3600) // 60)
+        text = f"{hours}h {mins}m"
+    else:
+        mins = max(int(diff.total_seconds() // 60), 1)
+        text = f"{mins}m"
+
+    if days >= 7:
+        color = "green"
+    elif days >= 2:
+        color = "orange"
+    else:
+        color = "red"
+
+    return f":{color}[:material/timer: Free cancel in {text}]", color
 
 
 # Booking types whose check-in → check-out range is HALF-OPEN
@@ -131,6 +178,17 @@ def _add_booking_form(trip_id: str, trip_row) -> None:
 
         url   = st.text_input("Booking URL", placeholder="https://…")
         conf  = st.text_input("Confirmation code (optional)")
+
+        st.caption(":material/event_busy: Free cancellation deadline (optional)")
+        fc1, fc2 = st.columns([2, 1])
+        with fc1:
+            fc_date = st.date_input("Date", value=None,
+                                    min_value=_date.today() - _td(days=1),
+                                    key="add_fc_date", label_visibility="collapsed")
+        with fc2:
+            fc_time = st.time_input("Time", value=_time(23, 59),
+                                    key="add_fc_time", label_visibility="collapsed")
+
         descr = st.text_area("Notes (optional)", height=70,
                              placeholder="What's included, cancellation policy, etc.")
 
@@ -146,6 +204,10 @@ def _add_booking_form(trip_id: str, trip_row) -> None:
             elif check_out and check_out < check_in:
                 st.error("Check-out cannot be before check-in.")
             else:
+                fc_iso = (
+                    _dt.combine(fc_date, fc_time or _time(23, 59)).isoformat(timespec="minutes")
+                    if fc_date else ""
+                )
                 bid = add_booking(
                     trip_id           = trip_id,
                     title             = title.strip(),
@@ -159,6 +221,7 @@ def _add_booking_form(trip_id: str, trip_row) -> None:
                     confirmation_code = conf.strip(),
                     url               = url.strip(),
                     description       = descr.strip(),
+                    free_cancellation = fc_iso,
                 )
                 if bid:
                     st.cache_data.clear()
@@ -216,6 +279,26 @@ def _edit_booking_form(trip_row, booking: pd.Series) -> None:
 
     new_url   = st.text_input("Booking URL", value=url_v, key=f"ebk_url_{bid}")
     new_conf  = st.text_input("Confirmation code", value=conf_v, key=f"ebk_conf_{bid}")
+
+    fc_v = _to_dt(booking.get("free_cancellation"))
+    st.caption(":material/event_busy: Free cancellation deadline (optional)")
+    fc1, fc2 = st.columns([2, 1])
+    with fc1:
+        new_fc_date = st.date_input(
+            "Date",
+            value=fc_v.date() if fc_v else None,
+            min_value=_date.today() - _td(days=365),
+            key=f"ebk_fc_date_{bid}",
+            label_visibility="collapsed",
+        )
+    with fc2:
+        new_fc_time = st.time_input(
+            "Time",
+            value=fc_v.time() if fc_v else _time(23, 59),
+            key=f"ebk_fc_time_{bid}",
+            label_visibility="collapsed",
+        )
+
     new_descr = st.text_area("Notes", value=desc_v, height=70, key=f"ebk_descr_{bid}")
 
     col_s, col_c = st.columns(2)
@@ -227,6 +310,10 @@ def _edit_booking_form(trip_row, booking: pd.Series) -> None:
             elif new_out and new_out < new_in:
                 st.error("Check-out cannot be before check-in.")
             else:
+                new_fc_iso = (
+                    _dt.combine(new_fc_date, new_fc_time or _time(23, 59)).isoformat(timespec="minutes")
+                    if new_fc_date else ""
+                )
                 if update_booking(
                     booking_id        = bid,
                     title             = new_title.strip(),
@@ -240,6 +327,7 @@ def _edit_booking_form(trip_row, booking: pd.Series) -> None:
                     confirmation_code = new_conf.strip(),
                     url               = new_url.strip(),
                     description       = new_descr.strip(),
+                    free_cancellation = new_fc_iso,
                 ):
                     st.session_state[f"edit_bk_{bid}"] = False
                     st.cache_data.clear()
@@ -282,11 +370,19 @@ def _render_booking_card(
         # ── Header row ────────────────────────────────────────────────────
         type_icon = TYPE_ICON.get(btype, ":material/bookmark:")
         status_badge = STATUS_BADGE.get(status, "")
+        fc_dt = _to_dt(booking.get("free_cancellation"))
 
         with st.container(horizontal=True, horizontal_alignment="distribute",
-                          vertical_alignment="center"):
+                          vertical_alignment="top"):
             st.markdown(f"### {type_icon} {title}")
-            st.markdown(f"{status_badge} {status}")
+            with st.container():
+                st.markdown(f"{status_badge} {status}")
+                if fc_dt:
+                    badge, _color = _format_countdown(fc_dt)
+                    st.markdown(
+                        badge,
+                        help=f"Free until {fc_dt.strftime('%Y-%m-%d %H:%M')}",
+                    )
 
         meta_bits = []
         if check_in:

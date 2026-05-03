@@ -99,6 +99,7 @@ BOOKING_COLS = [
     "confirmation_code",
     "url",
     "description",
+    "free_cancellation", # ISO datetime — deadline by which the booking can be cancelled free of charge
     "created_at",
 ]
 
@@ -771,6 +772,7 @@ def add_booking(
     confirmation_code: str = "",
     url:               str = "",
     description:       str = "",
+    free_cancellation: str = "",
 ) -> str | None:
     try:
         booking_id = f"bk_{uuid.uuid4().hex[:10]}"
@@ -789,6 +791,7 @@ def add_booking(
             "confirmation_code": confirmation_code,
             "url":               url,
             "description":       description,
+            "free_cancellation": free_cancellation or None,
             "created_at":        now,
         }).execute()
         return booking_id
@@ -810,6 +813,7 @@ def update_booking(
     confirmation_code: str = "",
     url:               str = "",
     description:       str = "",
+    free_cancellation: str = "",
 ) -> bool:
     try:
         _sb().table("bookings").update({
@@ -824,6 +828,7 @@ def update_booking(
             "confirmation_code": confirmation_code,
             "url":               url,
             "description":       description,
+            "free_cancellation": free_cancellation or None,
         }).eq("booking_id", booking_id).execute()
         return True
     except Exception:
