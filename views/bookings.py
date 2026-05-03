@@ -1,6 +1,6 @@
 """Bookings & Reservations page — manage hotels, flights, activities, etc."""
 
-from datetime import date as _date
+from datetime import date as _date, timedelta as _td
 import pandas as pd
 import streamlit as st
 
@@ -41,15 +41,28 @@ def _to_date(s) -> _date | None:
         return None
 
 
-def _ranges_overlap(a_in, a_out, b_in, b_out) -> bool:
-    """True if date ranges [a_in, a_out] and [b_in, b_out] overlap.
-    Missing check_out is treated as same day as check_in.
+# Booking types whose check-in → check-out range is HALF-OPEN
+# (check_out is the day you LEAVE / RETURN, not a covered night).
+# Hotels: stay nights of [check_in, check_out).
+# Car rentals: vehicle held during [pickup, return) hours of those days.
+HALF_OPEN_TYPES = {"Hotel", "Hostel", "Car rental"}
+
+
+def _effective_range(btype: str, ci: _date | None, co: _date | None) -> tuple[_date | None, _date | None]:
+    """Return inclusive [start, end] occupancy range for overlap math.
+
+    For lodging/rental: the check-out date is NOT occupied, so end = check_out − 1 day.
+    For event-style bookings: the closed range is [check_in, check_out].
+    Missing check_out is treated as a single-day booking.
     """
-    if not a_in or not b_in:
-        return False
-    a_end = a_out or a_in
-    b_end = b_out or b_in
-    return (a_in <= b_end) and (b_in <= a_end)
+    if not ci:
+        return None, None
+    if not co or co <= ci:
+        return ci, ci
+    if btype in HALF_OPEN_TYPES:
+        end = co - _td(days=1)
+        return ci, end if end >= ci else ci
+    return ci, co
 
 
 def _detect_overlaps(df: pd.DataFrame) -> dict[str, set[str]]:
@@ -62,17 +75,25 @@ def _detect_overlaps(df: pd.DataFrame) -> dict[str, set[str]]:
     for _, r in df.iterrows():
         if str(r.get("status", "")) == "Cancelled":
             continue
+        start, end = _effective_range(
+            str(r.get("type", "") or ""),
+            _to_date(r.get("check_in")),
+            _to_date(r.get("check_out")),
+        )
+        if not start:
+            continue
         rows.append({
-            "id":     str(r["booking_id"]),
-            "title":  str(r.get("title", "")),
-            "in":     _to_date(r.get("check_in")),
-            "out":    _to_date(r.get("check_out")),
+            "id":    str(r["booking_id"]),
+            "title": str(r.get("title", "")),
+            "start": start,
+            "end":   end,
         })
     for i in range(len(rows)):
         for j in range(i + 1, len(rows)):
-            if _ranges_overlap(rows[i]["in"], rows[i]["out"], rows[j]["in"], rows[j]["out"]):
-                out.setdefault(rows[i]["id"], set()).add(rows[j]["id"])
-                out.setdefault(rows[j]["id"], set()).add(rows[i]["id"])
+            a, b = rows[i], rows[j]
+            if a["start"] <= b["end"] and b["start"] <= a["end"]:
+                out.setdefault(a["id"], set()).add(b["id"])
+                out.setdefault(b["id"], set()).add(a["id"])
     return out
 
 
