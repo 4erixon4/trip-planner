@@ -62,12 +62,22 @@ Migration — adding the pace + financial sections to an existing install
 ──────────────────────────────────────────────────────────────────────────────
 
 alter table analysis_reports
-  add column if not exists pace_status      text not null default 'pending',
-  add column if not exists pace_summary     text default '',
-  add column if not exists pace_error       text default '',
-  add column if not exists financial_status text not null default 'pending',
+  add column if not exists pace_status       text not null default 'pending',
+  add column if not exists pace_summary      text default '',
+  add column if not exists pace_error        text default '',
+  add column if not exists financial_status  text not null default 'pending',
   add column if not exists financial_summary text default '',
-  add column if not exists financial_error  text default '';
+  add column if not exists financial_error   text default '',
+  add column if not exists stamps_status     text not null default 'pending',
+  add column if not exists stamps_summary    text default '',
+  add column if not exists stamps_error      text default '';
+
+──────────────────────────────────────────────────────────────────────────────
+Migration — adding the title column to expenses
+──────────────────────────────────────────────────────────────────────────────
+
+alter table expenses
+  add column if not exists title text default '';
 """
 
 from __future__ import annotations
@@ -138,6 +148,7 @@ _FINDINGS_SCHEMA: dict = {
                         "type": "object",
                         "properties": {
                             "content":     {"type": "string"},
+                            "title":       {"type": "string"},
                             "description": {"type": "string"},
                             "priority":    {"type": "string"},
                             "notes":       {"type": "string"},
@@ -179,8 +190,9 @@ Output rules (STRICT):
   and payload.currency (e.g. USD, EUR, ILS).
 - For create_expense, payload MUST include: amount (number), currency (string),
   category (one of: Food & Dining, Transport, Accommodation, Activities & Tours,
-  Shopping, Health, Communication, Misc), description (string).
-  Optional: date (YYYY-MM-DD, defaults to trip start_date).
+  Shopping, Health, Communication, Misc), title (short headline e.g. "Rental car
+  insurance"). Optional: description (longer detail), date (YYYY-MM-DD, defaults
+  to trip start_date).
 - Severity: "info" (helpful), "warning" (likely problem), "error" (definite gap).
 - Keep titles short (≤ 80 chars). Be specific, not generic.
 - Do NOT duplicate existing tasks, equipment items, or expenses already listed in context.
@@ -488,6 +500,51 @@ def _run_gas(report_id: str, ctx: dict) -> None:
         _section_to_failure(report_id, "gas", traceback.format_exc())
 
 
+def _run_stamps(report_id: str, ctx: dict) -> None:
+    try:
+        prompt = (
+            "You are an expert in collectible stamps, passport-book cancellations, "
+            "and postal stickers — specifically US National Park passport stamps, "
+            "National Forest / BLM / State-Park cancellations, unique post-office "
+            "pictorial cancellations, and any other regional stamp/sticker programs "
+            "relevant to the countries and regions in this itinerary.\n"
+            "\n"
+            "Your job:\n"
+            "1. For each existing destination in the itinerary that is AT or near a "
+            "   stamp/sticker location, add a short practical note (kind='append_bullets') "
+            "   to that entry's 'Additional info'. Include: what stamp/program is "
+            "   available, exactly where to get it (visitor center name, specific window, "
+            "   post office address), hours if known, whether it is free or paid.\n"
+            "2. If there is a NEARBY location NOT already in the itinerary where a "
+            "   unique, rare, or highly sought-after stamp/cancellation is available — "
+            "   AND it is a short detour of ≤ 30 minutes from an existing stop — "
+            "   suggest it as an 'append_text' note on the closest existing entry "
+            "   (not a full new destination). Keep it concise: 'X km off-route: "
+            "   [Name] post office has a pictorial cancellation for [Program]'. "
+            "   Do NOT suggest detours > 30 min or significant route changes.\n"
+            "3. If the traveller should bring something specific before the trip "
+            "   (e.g. a National Parks Passport book, extra blank-page inserts, a "
+            "   self-inking stamp pad, an envelope for a cancellation by mail), "
+            "   emit a 'create_task' finding with priority=High.\n"
+            "4. Use 'note' ONLY for general regional tips with no clear single target "
+            "   (e.g. 'This route passes through three passport stamp regions — "
+            "   consider carrying the book in the car at all times').\n"
+            "\n"
+            "DO NOT suggest removing or rearranging destinations. DO NOT touch "
+            "prices, pace, gas, or other logistics — other agents handle those.\n"
+            f"{_SHARED_PROMPT_RULES}\n"
+            f"Trip data (JSON):\n{_ctx_to_text(ctx)}"
+        )
+        parsed = generate_structured(MODEL_PRO, prompt, _FINDINGS_SCHEMA, use_search=False)
+        if "_error" in parsed:
+            _section_to_failure(report_id, "stamps", parsed["_error"])
+            return
+        _persist_findings(report_id, "stamps", parsed)
+        _section_to_completed(report_id, "stamps", str(parsed.get("summary", "")))
+    except Exception:
+        _section_to_failure(report_id, "stamps", traceback.format_exc())
+
+
 def _run_tasks(report_id: str, ctx: dict) -> None:
     try:
         prompt = (
@@ -532,7 +589,7 @@ def start_analysis(trip_id: str, user_email: str) -> str | None:
     if not insert_analysis_report(report_id, trip_id, user_email):
         return None
 
-    for target in (_run_logistics, _run_pace, _run_gas, _run_financial, _run_tasks):
+    for target in (_run_logistics, _run_pace, _run_gas, _run_financial, _run_stamps, _run_tasks):
         threading.Thread(
             target=target,
             args=(report_id, ctx),
@@ -544,7 +601,7 @@ def start_analysis(trip_id: str, user_email: str) -> str | None:
 def is_report_running(report: dict | None) -> bool:
     if not report:
         return False
-    for s in ("logistics", "pace", "gas", "financial", "tasks"):
+    for s in ("logistics", "pace", "gas", "financial", "stamps", "tasks"):
         col = f"{s}_status"
         if col in report and str(report.get(col, "")) == "running":
             return True
@@ -686,9 +743,10 @@ def apply_finding(finding_id: str, user_email: str, owner_override: str = "") ->
             category = str(payload.get("category", "")).strip()
             if category not in EXPENSE_CATEGORIES:
                 category = "Misc"
-            description = str(payload.get("description", "")).strip() or str(f.get("title", "")).strip()
-            if not description:
-                return False, "Expense description missing"
+            title = str(payload.get("title", "") or "").strip() or str(f.get("title", "") or "").strip()
+            if not title:
+                return False, "Expense title missing"
+            description = str(payload.get("description", "") or "").strip()
             currency = str(payload.get("currency", "")).strip() or "USD"
             # Default date to trip start if model didn't supply one
             date_val = str(payload.get("date", "")).strip()
@@ -696,13 +754,14 @@ def apply_finding(finding_id: str, user_email: str, owner_override: str = "") ->
                 trip_resp = _sb().table("trips").select("start_date").eq("trip_id", trip_id).limit(1).execute()
                 date_val = str(trip_resp.data[0]["start_date"]) if trip_resp.data else ""
             if not add_expense(
-                trip_id      = trip_id,
-                entry_date   = date_val,
-                category     = category,
-                description  = description,
-                amount       = amount,
-                currency     = currency,
-                links        = str(payload.get("links", "") or ""),
+                trip_id     = trip_id,
+                entry_date  = date_val,
+                category    = category,
+                title       = title,
+                amount      = amount,
+                currency    = currency,
+                description = description,
+                links       = str(payload.get("links", "") or ""),
             ):
                 return False, "Failed to add expense"
 

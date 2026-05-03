@@ -29,6 +29,7 @@ SECTIONS: list[tuple[str, str, str, str]] = [
     ("pace",      "Pace Adviser",       "speed",             "pace"),
     ("gas",       "Gas & Distance",     "local_gas_station", "gas"),
     ("financial", "Financial",          "payments",          "financial"),
+    ("stamps",    "Stamps & Stickers",  "approval",          "stamps"),
     ("tasks",     "Tasks & Equipment",  "task_alt",          "tasks"),
 ]
 
@@ -145,6 +146,12 @@ def _render_finding(
                 st.caption(f":material/payments: New price: **{new_price} {new_curr}**")
 
         if kind == "create_expense":
+            payload_title = str(payload.get("title", "") or "").strip()
+            if payload_title and payload_title != title:
+                st.caption(f":material/title: **{payload_title}**")
+            payload_desc = str(payload.get("description", "") or "").strip()
+            if payload_desc:
+                st.caption(payload_desc)
             bits = []
             cat = str(payload.get("category", "")).strip()
             if cat:

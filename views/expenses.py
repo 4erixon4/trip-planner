@@ -149,7 +149,15 @@ def _add_expense_form(trip_id: str, trip_row) -> None:
             max_value=max_date,
         )
         category = st.selectbox("Category", EXPENSE_CATEGORIES)
-        desc     = st.text_input("Description", placeholder="e.g. Dinner at Fisherman's Wharf")
+        title    = st.text_input(
+            "Title",
+            placeholder="e.g. Dinner at Fisherman's Wharf",
+        )
+        desc     = st.text_area(
+            "Description (optional)",
+            placeholder="Extra details — who came, what was ordered, why this expense, …",
+            height=80,
+        )
 
         c1, c2 = st.columns([2, 1])
         with c1:
@@ -169,10 +177,19 @@ def _add_expense_form(trip_id: str, trip_row) -> None:
             cancelled = st.form_submit_button("Cancel", icon=":material/close:", use_container_width=True)
 
         if saved:
-            if not desc.strip() or amount <= 0:
-                st.error("Description and a positive amount are required.")
+            if not title.strip() or amount <= 0:
+                st.error("Title and a positive amount are required.")
             else:
-                eid = add_expense(trip_id, exp_date, category, desc.strip(), amount, currency, links.strip())
+                eid = add_expense(
+                    trip_id     = trip_id,
+                    entry_date  = exp_date,
+                    category    = category,
+                    title       = title.strip(),
+                    amount      = amount,
+                    currency    = currency,
+                    description = desc.strip(),
+                    links       = links.strip(),
+                )
                 if eid:
                     st.success("Expense saved.")
                     st.session_state["adding_expense"] = False
@@ -278,11 +295,18 @@ def render() -> None:
             amt    = _to_float(exp.get("amount", 0))
             cur    = str(exp.get("currency", "")).strip()
             cat    = str(exp.get("category", "")).strip()
-            desc   = str(exp.get("description", "")).strip()
+            title  = str(exp.get("title", "") or "").strip()
+            desc   = str(exp.get("description", "") or "").strip()
             links  = str(exp.get("links", "") or "").strip()
 
+            # Backfill safety net: if a legacy row only has description, use it as title
+            if not title:
+                title, desc = desc, ""
+
             with st.container(border=True):
-                st.write(f"**{desc}**")
+                st.write(f"**{title}**")
+                if desc:
+                    st.write(desc)
                 st.caption(f":material/label: {cat}")
                 with st.container(horizontal=True, horizontal_alignment="right",
                                   vertical_alignment="center"):

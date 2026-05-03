@@ -61,7 +61,8 @@ EXPENSE_COLS = [
     "trip_id",
     "date",
     "category",
-    "description",
+    "title",            # short headline shown bold in the UI
+    "description",      # optional longer detail / context
     "amount",
     "currency",
     "links",            # "Label | URL , Label2 | URL2"
@@ -562,6 +563,16 @@ def get_expenses(trip_id: str) -> pd.DataFrame:
             df = pd.DataFrame(resp.data)
             if "links" not in df.columns:
                 df["links"] = ""
+            if "title" not in df.columns:
+                df["title"] = ""
+            if "description" not in df.columns:
+                df["description"] = ""
+            # Backfill: for legacy rows missing a title, fall back to description.
+            df["title"] = df.apply(
+                lambda r: str(r.get("title") or "").strip()
+                          or str(r.get("description") or "").strip(),
+                axis=1,
+            )
             return df
         return pd.DataFrame(columns=EXPENSE_COLS)
     except Exception as exc:
@@ -573,9 +584,10 @@ def add_expense(
     trip_id: str,
     entry_date,
     category: str,
-    description: str,
+    title: str,
     amount: float,
     currency: str,
+    description: str = "",
     links: str = "",
 ) -> str | None:
     """WRITE to Supabase + Google Sheets."""
@@ -585,15 +597,16 @@ def add_expense(
 
         # Supabase write (primary)
         _sb().table("expenses").insert({
-            "expense_id": expense_id,
-            "trip_id": trip_id,
-            "date": str(entry_date),
-            "category": category,
+            "expense_id":  expense_id,
+            "trip_id":     trip_id,
+            "date":        str(entry_date),
+            "category":    category,
+            "title":       title,
             "description": description,
-            "amount": amount,
-            "currency": currency,
-            "links": links,
-            "created_at": now,
+            "amount":      amount,
+            "currency":    currency,
+            "links":       links,
+            "created_at":  now,
         }).execute()
 
         if SHEETS_SYNC:
@@ -602,10 +615,11 @@ def add_expense(
                 _ensure_expense_cols(ws)
                 header = ws.row_values(1)
                 data = {
-                    "expense_id": expense_id, "trip_id": trip_id,
-                    "date": str(entry_date), "category": category,
+                    "expense_id":  expense_id, "trip_id": trip_id,
+                    "date":        str(entry_date), "category": category,
+                    "title":       title,
                     "description": description, "amount": amount,
-                    "currency": currency, "links": links, "created_at": now,
+                    "currency":    currency, "links": links, "created_at": now,
                 }
                 ws.append_row([data.get(col, "") for col in header])
             except Exception as sh_exc:
@@ -840,7 +854,7 @@ def delete_task(task_id: str) -> bool:
 # Analysis CRUD  (Supabase only — AI agent reports + findings)
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANALYSIS_SECTIONS = ("logistics", "pace", "gas", "financial", "tasks")
+ANALYSIS_SECTIONS = ("logistics", "pace", "gas", "financial", "tasks", "stamps")
 ANALYSIS_TERMINAL = ("completed", "failed")
 
 
