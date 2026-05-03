@@ -8,6 +8,7 @@ from utils.sheets import (
     add_trip, delete_trip,
     add_itinerary_entry, update_itinerary_entry, delete_itinerary_entry,
     set_day_title, get_tasks, link_task_to_entry, unlink_task_from_entry,
+    shift_itinerary_dates,
 )
 from utils.images import (
     trigger_async_generation, delete_image, regenerate_sync,
@@ -552,6 +553,93 @@ def _edit_entry_form(trip_row, entry) -> None:
             st.rerun()
 
 
+# ─── Shift-dates dialog ──────────────────────────────────────────────────────
+@st.dialog("Shift itinerary dates")
+def _shift_dates_dialog(trip_row, all_entry_dates: list[date]) -> None:
+    """Let the user pick a 'from' date and a new target date for it; all
+    entries on that date and afterwards slide forward (or back) by the delta."""
+    trip_id    = str(trip_row["trip_id"])
+    trip_start = str(trip_row["start_date"])
+    trip_end   = str(trip_row["end_date"])
+
+    if not all_entry_dates:
+        st.info("No entries in the itinerary yet.", icon=":material/info:")
+        return
+
+    # ── From date ────────────────────────────────────────────────────────────
+    st.markdown("Move **all entries from a chosen date onwards** to a new date.")
+    from_date = st.selectbox(
+        "Shift entries starting from",
+        options=all_entry_dates,
+        format_func=lambda d: f"Day {trip_day_number(trip_start, d)} · {d}",
+        key="shift_from_date",
+    )
+
+    # ── Target date for 'from_date' ──────────────────────────────────────────
+    trip_end_dt = date.fromisoformat(trip_end) if trip_end else None
+    to_date = st.date_input(
+        f"Move the {from_date} entries to",
+        value=from_date,
+        min_value=date.fromisoformat(trip_start) if trip_start else None,
+        key="shift_to_date",
+    )
+
+    delta = (to_date - from_date).days
+
+    # ── Preview ──────────────────────────────────────────────────────────────
+    affected = [d for d in all_entry_dates if d >= from_date]
+    if delta == 0:
+        st.info("From and to dates are the same — nothing would move.", icon=":material/info:")
+    elif delta > 0:
+        new_last = max(affected) + timedelta(days=delta) if affected else to_date
+        st.success(
+            f"**+{delta} day{'s' if delta != 1 else ''}** · "
+            f"{len(affected)} day{'s' if len(affected) != 1 else ''} of entries "
+            f"({min(affected)} → {max(affected)}) will shift to "
+            f"{min(affected) + timedelta(days=delta)} → {new_last}.",
+            icon=":material/calendar_month:",
+        )
+        if trip_end_dt and new_last > trip_end_dt:
+            st.warning(
+                f"Some entries will land after the trip end date ({trip_end}). "
+                "The trip end date is NOT automatically updated.",
+                icon=":material/warning:",
+            )
+    else:
+        new_first = min(affected) + timedelta(days=delta) if affected else to_date
+        st.warning(
+            f"**{delta} day{'s' if delta != -1 else ''}** (backwards) · "
+            f"{len(affected)} day{'s' if len(affected) != 1 else ''} of entries will shift "
+            f"to {new_first}.",
+            icon=":material/calendar_month:",
+        )
+
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key="shift_cancel", type="secondary", use_container_width=True):
+            st.rerun()
+    with c2:
+        if st.button(
+            "Shift dates",
+            key="shift_confirm",
+            type="primary",
+            use_container_width=True,
+            disabled=(delta == 0),
+        ):
+            ok, count = shift_itinerary_dates(
+                trip_id        = trip_id,
+                trip_start_str = trip_start,
+                from_date_str  = str(from_date),
+                delta_days     = delta,
+            )
+            if ok:
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Shift failed — see error above.")
+
+
 # ─── Delete-trip confirmation dialog ────────────────────────────────────────
 @st.dialog("Delete trip — are you sure?")
 def _delete_trip_dialog(trip_id: str) -> None:
@@ -613,6 +701,10 @@ def render() -> None:
         all_dates = [d for d in all_dates if filter_start <= date.fromisoformat(str(d)) <= filter_end]
 
     # Trip card
+    all_date_objs = [date.fromisoformat(str(d)) for d in sorted(
+        entries_df["date"].unique()
+    )] if not entries_df.empty else []
+
     with st.container(border=True):
         st.subheader(trip_row["trip_name"], anchor=False)
         with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute"):
@@ -620,6 +712,13 @@ def render() -> None:
                 f":material/public: {trip_row['country']}  ·  "
                 f":material/calendar_month: {trip_row['start_date']} → {trip_row['end_date']}"
             )
+            if st.button(
+                "", icon=":material/date_range:",
+                key="shift_dates_btn", type="tertiary",
+                help="Shift itinerary dates",
+                disabled=not all_date_objs,
+            ):
+                _shift_dates_dialog(trip_row, all_date_objs)
             if st.button("Delete", icon=":material/delete_forever:", type="tertiary",
                          key="del_trip_btn", help="Delete this trip permanently"):
                 _delete_trip_dialog(trip_row["trip_id"])

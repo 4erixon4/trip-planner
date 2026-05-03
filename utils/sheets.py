@@ -10,7 +10,7 @@ Exception: Nano Banana image_url stored only in Supabase (not yet implemented).
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, date as _date, timedelta
 
 import gspread
 import pandas as pd
@@ -852,6 +852,54 @@ def delete_task(task_id: str) -> bool:
     except Exception as exc:
         st.error(f"Error deleting task: {exc}")
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Date shift  (bulk itinerary mutation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def shift_itinerary_dates(
+    trip_id: str,
+    trip_start_str: str,
+    from_date_str: str,
+    delta_days: int,
+) -> tuple[bool, int]:
+    """Shift every itinerary row (including day-title sentinels) whose `date` ≥
+    `from_date_str` forward by `delta_days` days.
+
+    Also updates `day_number` relative to the trip start.
+    Returns (success, rows_updated).
+    """
+    if delta_days == 0:
+        return True, 0
+    try:
+        resp = (
+            _sb().table("itinerary")
+            .select("entry_id,date,day_number")
+            .eq("trip_id", trip_id)
+            .gte("date", from_date_str)
+            .execute()
+        )
+        if not resp.data:
+            return True, 0
+
+        trip_start_dt = _date.fromisoformat(trip_start_str)
+        count = 0
+        for row in resp.data:
+            old_date = _date.fromisoformat(str(row["date"]))
+            new_date = old_date + timedelta(days=delta_days)
+            new_day  = (new_date - trip_start_dt).days + 1
+            _sb().table("itinerary").update({
+                "date":       str(new_date),
+                "day_number": new_day,
+            }).eq("entry_id", str(row["entry_id"])).execute()
+            count += 1
+
+        return True, count
+    except Exception as exc:
+        st.error(f"Error shifting dates: {exc}")
+        return False, 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
