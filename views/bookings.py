@@ -403,19 +403,6 @@ def _render_booking_card(
         if descr:
             st.write(descr)
 
-        # ── Overlap warning ──────────────────────────────────────────────
-        if overlap_set:
-            others = bookings_df[bookings_df["booking_id"].isin(overlap_set)]
-            other_titles = [
-                f"**{r['title']}** ({_to_date(r.get('check_in'))} → "
-                f"{_to_date(r.get('check_out')) or _to_date(r.get('check_in'))})"
-                for _, r in others.iterrows()
-            ]
-            st.warning(
-                "Overlaps with: " + " · ".join(other_titles),
-                icon=":material/warning:",
-            )
-
         # ── Linked itinerary destinations ────────────────────────────────
         linked = linked_entries_by_booking.get(bid, [])
         if linked:
