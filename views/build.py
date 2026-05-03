@@ -8,7 +8,7 @@ from utils.sheets import (
     add_trip, delete_trip,
     add_itinerary_entry, update_itinerary_entry, delete_itinerary_entry,
     set_day_title, get_tasks, link_task_to_entry, unlink_task_from_entry,
-    shift_itinerary_dates,
+    shift_itinerary_dates, move_day_entries,
 )
 from utils.images import (
     trigger_async_generation, delete_image, regenerate_sync,
@@ -736,26 +736,63 @@ def render() -> None:
         st.info("No entries yet — tap **Add destination** above.", icon=":material/info:")
         return
 
+    occupied_dates = {date.fromisoformat(str(d)) for d in entries_df["date"].unique()} if not entries_df.empty else set()
+    trip_start_dt  = date.fromisoformat(trip_start) if trip_start else None
+    trip_end_dt    = date.fromisoformat(str(trip_row["end_date"])) if trip_row.get("end_date") else None
+
     for entry_date in all_dates:
-        day_num = trip_day_number(trip_start, date.fromisoformat(str(entry_date)))
+        entry_date_obj = date.fromisoformat(str(entry_date))
+        day_num = trip_day_number(trip_start, entry_date_obj)
         title   = day_titles.get(str(entry_date), "")
-        heading  = f"Day {day_num} — {entry_date}" + (f" — {title}" if title else "")
-        weekday  = date.fromisoformat(str(entry_date)).strftime("%A")
+        heading = f"Day {day_num} — {entry_date}" + (f" — {title}" if title else "")
+        weekday = entry_date_obj.strftime("%A")
 
         st.subheader(heading, anchor=False, divider="gray")
         st.caption(f":gray[{weekday}]")
 
-        with st.expander("Set day title", icon=":material/label:"):
-            new_title = st.text_input(
-                "Title for this day",
-                value=title,
-                placeholder="e.g. San Francisco",
-                key=f"daytitle_input_{entry_date}",
-            )
-            if st.button("Save title", icon=":material/save:", key=f"daytitle_save_{entry_date}"):
-                if set_day_title(trip_row, str(entry_date), new_title.strip()):
-                    st.cache_data.clear()
-                    st.rerun()
+        # ── Day controls: title + change date, side by side ──────────────────
+        ctrl_l, ctrl_r = st.columns(2)
+
+        with ctrl_l:
+            with st.expander("Set day title", icon=":material/label:"):
+                new_title = st.text_input(
+                    "Title for this day",
+                    value=title,
+                    placeholder="e.g. San Francisco",
+                    key=f"daytitle_input_{entry_date}",
+                )
+                if st.button("Save title", icon=":material/save:", key=f"daytitle_save_{entry_date}"):
+                    if set_day_title(trip_row, str(entry_date), new_title.strip()):
+                        st.cache_data.clear()
+                        st.rerun()
+
+        with ctrl_r:
+            with st.expander("Change day's date", icon=":material/edit_calendar:"):
+                new_day_date = st.date_input(
+                    "Move this day to",
+                    value=entry_date_obj,
+                    min_value=trip_start_dt,
+                    max_value=trip_end_dt,
+                    key=f"daydate_picker_{entry_date}",
+                )
+                if st.button(
+                    "Apply",
+                    icon=":material/check:",
+                    type="primary",
+                    key=f"daydate_apply_{entry_date}",
+                    disabled=(new_day_date == entry_date_obj),
+                ):
+                    ok, err = move_day_entries(
+                        trip_id        = str(trip_row["trip_id"]),
+                        trip_start_str = trip_start,
+                        from_date_str  = str(entry_date),
+                        to_date_str    = str(new_day_date),
+                    )
+                    if ok:
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(err, icon=":material/error:")
 
         group = entries_df[entries_df["date"] == entry_date].reset_index(drop=True)
         for entry_idx, (_, entry) in enumerate(group.iterrows()):

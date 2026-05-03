@@ -859,6 +859,57 @@ def delete_task(task_id: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def move_day_entries(
+    trip_id: str,
+    trip_start_str: str,
+    from_date_str: str,
+    to_date_str: str,
+) -> tuple[bool, str]:
+    """Move all itinerary rows (entries + day-title) for ONE specific day to a new date.
+
+    Returns (True, "") on success or (False, error_message) on failure / overlap.
+    Overlap = the target date already has non-title itinerary entries.
+    """
+    try:
+        # Check for overlap: does to_date already have real entries?
+        existing = (
+            _sb().table("itinerary")
+            .select("entry_id")
+            .eq("trip_id", trip_id)
+            .eq("date", to_date_str)
+            .execute()
+        )
+        # Filter out day-title sentinel rows
+        real = [r for r in (existing.data or []) if not str(r["entry_id"]).startswith("daytitle_")]
+        if real:
+            return False, f"Date {to_date_str} already has {len(real)} entr{'y' if len(real)==1 else 'ies'}. Move or delete them first."
+
+        # Fetch every row for the source date
+        resp = (
+            _sb().table("itinerary")
+            .select("entry_id")
+            .eq("trip_id", trip_id)
+            .eq("date", from_date_str)
+            .execute()
+        )
+        if not resp.data:
+            return True, ""
+
+        trip_start_dt = _date.fromisoformat(trip_start_str)
+        to_dt         = _date.fromisoformat(to_date_str)
+        new_day       = (to_dt - trip_start_dt).days + 1
+
+        for row in resp.data:
+            _sb().table("itinerary").update({
+                "date":       to_date_str,
+                "day_number": new_day,
+            }).eq("entry_id", str(row["entry_id"])).execute()
+
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
 def shift_itinerary_dates(
     trip_id: str,
     trip_start_str: str,
