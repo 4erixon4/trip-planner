@@ -310,19 +310,34 @@ def _render_booking_card(
                     )
 
         # ── Action row ───────────────────────────────────────────────────
-        with st.container(horizontal=True, horizontal_alignment="right",
+        with st.container(horizontal=True, horizontal_alignment="distribute",
                           vertical_alignment="center"):
-            if url:
-                st.link_button("Open booking", url, icon=":material/open_in_new:")
-            if st.button("", icon=":material/edit:", type="tertiary",
-                         key=f"bk_edit_{bid}", help="Edit booking"):
-                st.session_state[edit_key] = True
-                st.rerun()
-            if st.button("", icon=":material/delete:", type="tertiary",
-                         key=f"bk_del_{bid}", help="Delete booking"):
-                if delete_booking(bid):
-                    st.cache_data.clear()
+            # Left side — overlap indicator (or filler when none)
+            with st.container(horizontal=True, vertical_alignment="center"):
+                if overlap_set:
+                    overlap_titles = ", ".join(
+                        str(r["title"]) for _, r in
+                        bookings_df[bookings_df["booking_id"].isin(overlap_set)].iterrows()
+                    )
+                    n = len(overlap_set)
+                    st.markdown(
+                        f":red[:material/warning:] **:red[Overlap × {n}]**",
+                        help=f"Overlaps with: {overlap_titles}",
+                    )
+
+            # Right side — actions
+            with st.container(horizontal=True, vertical_alignment="center"):
+                if url:
+                    st.link_button("Open booking", url, icon=":material/open_in_new:")
+                if st.button("", icon=":material/edit:", type="tertiary",
+                             key=f"bk_edit_{bid}", help="Edit booking"):
+                    st.session_state[edit_key] = True
                     st.rerun()
+                if st.button("", icon=":material/delete:", type="tertiary",
+                             key=f"bk_del_{bid}", help="Delete booking"):
+                    if delete_booking(bid):
+                        st.cache_data.clear()
+                        st.rerun()
 
 
 def render() -> None:
