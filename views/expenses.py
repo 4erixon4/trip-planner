@@ -182,12 +182,15 @@ def _category_chart(
 
     chart = (
         alt.Chart(df)
-        .mark_bar(height=40, cornerRadiusEnd=3)
+        .mark_bar(height=36, cornerRadiusEnd=3)
         .encode(
             x=alt.X(
                 "Amount (₪):Q",
                 stack="normalize",
-                axis=alt.Axis(format="%", title="", labels=True, ticks=False, grid=False),
+                axis=alt.Axis(
+                    format="%", title="", labels=True, ticks=False, grid=False,
+                    labelPadding=6,
+                ),
             ),
             color=alt.Color(
                 "Category:N",
@@ -200,7 +203,7 @@ def _category_chart(
                 alt.Tooltip("Pct %:Q",       format=".1f",  title="% of total"),
             ],
         )
-        .properties(height=80)
+        .properties(height=90, padding={"top": 8, "bottom": 4, "left": 4, "right": 4})
     )
     st.altair_chart(chart, use_container_width=True)
     st.caption(":gray[Amounts converted to ₪ at live rates. Hover a segment for details.]")
