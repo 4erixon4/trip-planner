@@ -92,14 +92,35 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
     trip_start = str(trip_row["start_date"])
     trip_end   = str(trip_row["end_date"])
 
+    # Default to the latest date already in the plan; fall back to trip start.
+    if not existing_df.empty and "date" in existing_df.columns:
+        try:
+            latest_in_plan = date.fromisoformat(
+                str(existing_df["date"].max())
+            )
+        except (ValueError, TypeError):
+            latest_in_plan = None
+    else:
+        latest_in_plan = None
+
+    trip_start_date = date.fromisoformat(trip_start) if trip_start else date.today()
+    trip_end_date   = date.fromisoformat(trip_end)   if trip_end   else None
+
+    if latest_in_plan and trip_end_date:
+        default_date = min(latest_in_plan, trip_end_date)
+    elif latest_in_plan:
+        default_date = latest_in_plan
+    else:
+        default_date = trip_start_date
+
     with st.form("add_entry_form", clear_on_submit=True, border=True):
         st.subheader("New destination", anchor=False)
 
         entry_date = st.date_input(
             "Date",
-            value=date.fromisoformat(trip_start) if trip_start else date.today(),
-            min_value=date.fromisoformat(trip_start) if trip_start else None,
-            max_value=date.fromisoformat(trip_end)   if trip_end   else None,
+            value=default_date,
+            min_value=trip_start_date,
+            max_value=trip_end_date,
         )
 
         # Time
