@@ -44,6 +44,7 @@ ITINERARY_COLS = [
     "description",
     "price",
     "currency",
+    "category",         # expense category for this entry (matches EXPENSE_CATEGORIES)
     "accommodation",
     "links",
     "additional_info",
@@ -363,6 +364,9 @@ def get_itinerary(trip_row: pd.Series) -> pd.DataFrame:
         )
         if resp.data:
             df = pd.DataFrame(resp.data)
+            if "category" not in df.columns:
+                df["category"] = ""
+            df["category"] = df["category"].fillna("").astype(str)
             return df.sort_values("date", ignore_index=True)
         return pd.DataFrame(columns=ITINERARY_COLS)
     except Exception as exc:

@@ -4,9 +4,11 @@ from datetime import date
 import requests
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 from utils.sheets import (
     get_expenses, add_expense, delete_expense,
+    update_itinerary_entry,
     EXPENSE_CATEGORIES, EXPENSE_COLS,
 )
 from views._shared import (
@@ -125,6 +127,83 @@ def _fmt_totals(totals: dict[str, float]) -> str:
     if not totals:
         return "—"
     return "  ·  ".join(f"**{v:,.2f}** {k}" for k, v in sorted(totals.items()))
+
+
+# ─── Itinerary category save callback ────────────────────────────────────────
+def _save_itin_category(entry_id: str, trip_id_str: str, key: str) -> None:
+    new_cat = st.session_state.get(key, "")
+    trip_row_ser = pd.Series({"trip_id": trip_id_str, "sheet_tab": ""})
+    update_itinerary_entry(trip_row_ser, entry_id, category=new_cat)
+    st.cache_data.clear()
+
+
+# ─── Category stacked bar chart ───────────────────────────────────────────────
+def _category_chart(
+    entries_df: pd.DataFrame,
+    exp_df: pd.DataFrame,
+    ils_rates: dict[str, float],
+) -> None:
+    """Render a 100 % stacked horizontal bar showing spend by category in ₪."""
+    cat_ils: dict[str, float] = {}
+
+    if not entries_df.empty and "price" in entries_df.columns:
+        for _, row in entries_df.iterrows():
+            amt = _to_float(row.get("price", 0))
+            if amt <= 0:
+                continue
+            cur  = str(row.get("currency", "USD") or "USD").strip() or "USD"
+            rate = ils_rates.get(cur, 0.0)
+            cat  = str(row.get("category") or "").strip() or "Uncategorized"
+            cat_ils[cat] = cat_ils.get(cat, 0.0) + amt * rate
+
+    if not exp_df.empty and "amount" in exp_df.columns:
+        for _, row in exp_df.iterrows():
+            amt = _to_float(row.get("amount", 0))
+            if amt <= 0:
+                continue
+            cur  = str(row.get("currency", "USD") or "USD").strip() or "USD"
+            rate = ils_rates.get(cur, 0.0)
+            cat  = str(row.get("category") or "").strip() or "Misc"
+            cat_ils[cat] = cat_ils.get(cat, 0.0) + amt * rate
+
+    cat_ils = {k: v for k, v in cat_ils.items() if v > 0}
+    if not cat_ils:
+        return
+
+    total = sum(cat_ils.values())
+    df = pd.DataFrame([
+        {
+            "Category":   k,
+            "Amount (₪)": round(v),
+            "Pct %":      round(v / total * 100, 1),
+        }
+        for k, v in sorted(cat_ils.items(), key=lambda x: -x[1])
+    ])
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar(height=40, cornerRadiusEnd=3)
+        .encode(
+            x=alt.X(
+                "Amount (₪):Q",
+                stack="normalize",
+                axis=alt.Axis(format="%", title="", labels=True, ticks=False, grid=False),
+            ),
+            color=alt.Color(
+                "Category:N",
+                legend=alt.Legend(orient="bottom", columns=3, title=None),
+            ),
+            order=alt.Order("Amount (₪):Q", sort="descending"),
+            tooltip=[
+                alt.Tooltip("Category:N",    title="Category"),
+                alt.Tooltip("Amount (₪):Q",  format=",.0f", title="Amount (₪)"),
+                alt.Tooltip("Pct %:Q",       format=".1f",  title="% of total"),
+            ],
+        )
+        .properties(height=80)
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(":gray[Amounts converted to ₪ at live rates. Hover a segment for details.]")
 
 
 # ─── Add expense form ─────────────────────────────────────────────────────────
@@ -248,6 +327,8 @@ def render() -> None:
                 f"₪ {ils_total:,.0f}",
                 help=f"Live rates via frankfurter.app · {rate_date}",
             )
+            # ── 100 % stacked category chart ─────────────────────────────────
+            _category_chart(entries_df, exp_df, ils_rates)
         elif overall and not ils_rates:
             st.caption("⚠️ Could not fetch live exchange rates for NIS conversion.")
 
@@ -263,14 +344,33 @@ def render() -> None:
         if priced.empty:
             st.caption("No priced entries in itinerary.")
         else:
+            cat_opts = [""] + EXPENSE_CATEGORIES
             for entry_date, group in priced.groupby("date"):
                 st.caption(f"**{entry_date}**")
                 for _, row in group.iterrows():
+                    eid  = str(row.get("entry_id", ""))
                     amt  = _to_float(row.get("price", 0))
                     cur  = str(row.get("currency", "")).strip()
                     dest = str(row.get("destination", "")).strip()
-                    if amt > 0:
-                        st.write(f"&nbsp;&nbsp;&nbsp;{dest} — **{amt:,.2f} {cur}**")
+                    cur_cat = str(row.get("category") or "").strip()
+                    if amt <= 0:
+                        continue
+                    cat_key = f"itin_cat_{eid}"
+                    cat_idx = cat_opts.index(cur_cat) if cur_cat in cat_opts else 0
+                    c1, c2 = st.columns([3, 2])
+                    with c1:
+                        st.write(f"{dest} — **{amt:,.2f} {cur}**")
+                    with c2:
+                        st.selectbox(
+                            "Category",
+                            options=cat_opts,
+                            index=cat_idx,
+                            key=cat_key,
+                            format_func=lambda x: "— category —" if x == "" else x,
+                            on_change=_save_itin_category,
+                            args=(eid, trip_id, cat_key),
+                            label_visibility="collapsed",
+                        )
 
     # ── Add expense button + title in same row ────────────────────────────────
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="bottom"):
