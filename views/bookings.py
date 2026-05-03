@@ -432,7 +432,8 @@ def _render_booking_card(
                     )
 
             # Right side — actions
-            with st.container(horizontal=True, vertical_alignment="center"):
+            with st.container(horizontal=True, horizontal_alignment="right",
+                              vertical_alignment="center"):
                 if url:
                     st.link_button("Open booking", url, icon=":material/open_in_new:")
                 if st.button("", icon=":material/edit:", type="tertiary",
