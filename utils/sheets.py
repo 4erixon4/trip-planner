@@ -10,7 +10,7 @@ Exception: Nano Banana image_url stored only in Supabase (not yet implemented).
 import json
 import re
 import uuid
-from datetime import datetime, date as _date, timedelta
+from datetime import datetime, date as _date, timedelta as _timedelta
 
 import gspread
 import pandas as pd
@@ -963,7 +963,7 @@ def shift_itinerary_dates(
         count = 0
         for row in resp.data:
             old_date = _date.fromisoformat(str(row["date"]))
-            new_date = old_date + timedelta(days=delta_days)
+            new_date = old_date + _timedelta(days=delta_days)
             new_day  = (new_date - trip_start_dt).days + 1
             _sb().table("itinerary").update({
                 "date":       str(new_date),
