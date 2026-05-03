@@ -767,32 +767,104 @@ def render() -> None:
                         st.rerun()
 
         with ctrl_r:
-            with st.expander("Change day's date", icon=":material/edit_calendar:"):
-                new_day_date = st.date_input(
-                    "Move this day to",
-                    value=entry_date_obj,
-                    min_value=trip_start_dt,
-                    max_value=trip_end_dt,
-                    key=f"daydate_picker_{entry_date}",
-                )
-                if st.button(
-                    "Apply",
-                    icon=":material/check:",
-                    type="primary",
-                    key=f"daydate_apply_{entry_date}",
-                    disabled=(new_day_date == entry_date_obj),
-                ):
-                    ok, err = move_day_entries(
-                        trip_id        = str(trip_row["trip_id"]),
-                        trip_start_str = trip_start,
-                        from_date_str  = str(entry_date),
-                        to_date_str    = str(new_day_date),
-                    )
-                    if ok:
-                        st.cache_data.clear()
-                        st.rerun()
+            pending_key   = f"daydate_pending_{entry_date}"
+            pending       = st.session_state.get(pending_key)
+            expander_open = bool(pending)
+            with st.expander("Change day's date", icon=":material/edit_calendar:", expanded=expander_open):
+                trip_end_str = str(trip_row.get("end_date", "")) if trip_row.get("end_date") else ""
+
+                if pending:
+                    # ── Confirmation phase ────────────────────────────────
+                    pairs     = pending["pairs"]
+                    to_date_s = pending["to_date"]
+                    delta_d   = (date.fromisoformat(to_date_s) - entry_date_obj).days
+                    direction = "forward" if delta_d > 0 else "back"
+                    cascade   = pairs[1:]
+
+                    if cascade:
+                        st.warning(
+                            f"Moving this day to **{to_date_s}** will also shift "
+                            f"**{len(cascade)}** other day(s) {direction} by "
+                            f"**{abs(delta_d)} day(s)**:",
+                            icon=":material/info:",
+                        )
+                        for old_d, new_d in cascade:
+                            st.caption(f"  {old_d} → {new_d}")
                     else:
-                        st.error(err, icon=":material/error:")
+                        st.info(f"Move this day to **{to_date_s}**?", icon=":material/edit_calendar:")
+
+                    col_ok, col_cancel = st.columns(2)
+                    with col_ok:
+                        if st.button("Confirm", icon=":material/check:", type="primary",
+                                     key=f"daydate_confirm_{entry_date}"):
+                            ok, err, _ = move_day_entries(
+                                trip_id        = str(trip_row["trip_id"]),
+                                trip_start_str = trip_start,
+                                trip_end_str   = trip_end_str,
+                                from_date_str  = str(entry_date),
+                                to_date_str    = to_date_s,
+                                dry_run        = False,
+                            )
+                            del st.session_state[pending_key]
+                            if ok:
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(err, icon=":material/error:")
+                    with col_cancel:
+                        if st.button("Cancel", icon=":material/close:",
+                                     key=f"daydate_cancel_{entry_date}"):
+                            del st.session_state[pending_key]
+                            st.rerun()
+
+                else:
+                    # ── Pick-date phase ───────────────────────────────────
+                    new_day_date = st.date_input(
+                        "Move this day to",
+                        value=entry_date_obj,
+                        min_value=trip_start_dt,
+                        max_value=trip_end_dt,
+                        key=f"daydate_picker_{entry_date}",
+                    )
+                    if st.button(
+                        "Apply",
+                        icon=":material/check:",
+                        type="primary",
+                        key=f"daydate_apply_{entry_date}",
+                        disabled=(new_day_date == entry_date_obj),
+                    ):
+                        ok, err, pairs = move_day_entries(
+                            trip_id        = str(trip_row["trip_id"]),
+                            trip_start_str = trip_start,
+                            trip_end_str   = trip_end_str,
+                            from_date_str  = str(entry_date),
+                            to_date_str    = str(new_day_date),
+                            dry_run        = True,
+                        )
+                        if not ok:
+                            st.error(err, icon=":material/error:")
+                        elif len(pairs) <= 1:
+                            # Only this day moves — apply immediately
+                            ok2, err2, _ = move_day_entries(
+                                trip_id        = str(trip_row["trip_id"]),
+                                trip_start_str = trip_start,
+                                trip_end_str   = trip_end_str,
+                                from_date_str  = str(entry_date),
+                                to_date_str    = str(new_day_date),
+                                dry_run        = False,
+                            )
+                            if ok2:
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(err2, icon=":material/error:")
+                        else:
+                            # Cascade needed — store and rerun to show confirmation
+                            st.session_state[pending_key] = {
+                                "to_date": str(new_day_date),
+                                "pairs":   pairs,
+                            }
+                            st.rerun()
 
         group = entries_df[entries_df["date"] == entry_date].reset_index(drop=True)
         for entry_idx, (_, entry) in enumerate(group.iterrows()):

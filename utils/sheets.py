@@ -862,52 +862,76 @@ def delete_task(task_id: str) -> bool:
 def move_day_entries(
     trip_id: str,
     trip_start_str: str,
+    trip_end_str: str,
     from_date_str: str,
     to_date_str: str,
-) -> tuple[bool, str]:
-    """Move all itinerary rows (entries + day-title) for ONE specific day to a new date.
+    dry_run: bool = False,
+) -> tuple[bool, str, list[tuple[str, str]]]:
+    """Shift this day and all subsequent days by delta = to_date - from_date.
 
-    Returns (True, "") on success or (False, error_message) on failure / overlap.
-    Overlap = the target date already has non-title itinerary entries.
+    Returns (True, "", [(old_date, new_date), ...]) listing every day that moves.
+    Returns (False, error_msg, []) on bounds violation or DB error.
+    When dry_run=True the DB is never touched.
     """
     try:
-        # Check for overlap: does to_date already have real entries?
-        existing = (
-            _sb().table("itinerary")
-            .select("entry_id")
-            .eq("trip_id", trip_id)
-            .eq("date", to_date_str)
-            .execute()
-        )
-        # Filter out day-title sentinel rows
-        real = [r for r in (existing.data or []) if not str(r["entry_id"]).startswith("daytitle_")]
-        if real:
-            return False, f"Date {to_date_str} already has {len(real)} entr{'y' if len(real)==1 else 'ies'}. Move or delete them first."
+        from_dt = _date.fromisoformat(from_date_str)
+        to_dt   = _date.fromisoformat(to_date_str)
+        delta   = (to_dt - from_dt).days
 
-        # Fetch every row for the source date
+        if delta == 0:
+            return True, "", []
+
+        trip_start_dt = _date.fromisoformat(trip_start_str)
+        trip_end_dt   = _date.fromisoformat(trip_end_str) if trip_end_str else None
+
+        # Gather all unique dates >= from_date for this trip
         resp = (
             _sb().table("itinerary")
-            .select("entry_id")
+            .select("entry_id,date")
             .eq("trip_id", trip_id)
-            .eq("date", from_date_str)
+            .gte("date", from_date_str)
+            .order("date")
             .execute()
         )
         if not resp.data:
-            return True, ""
+            return True, "", []
 
-        trip_start_dt = _date.fromisoformat(trip_start_str)
-        to_dt         = _date.fromisoformat(to_date_str)
-        new_day       = (to_dt - trip_start_dt).days + 1
+        unique_dates = sorted(set(r["date"] for r in resp.data))
 
-        for row in resp.data:
-            _sb().table("itinerary").update({
-                "date":       to_date_str,
-                "day_number": new_day,
-            }).eq("entry_id", str(row["entry_id"])).execute()
+        # Validate bounds for every date that would move
+        pairs: list[tuple[str, str]] = []
+        for d_str in unique_dates:
+            old_dt = _date.fromisoformat(d_str)
+            new_dt = old_dt + _timedelta(days=delta)
+            if new_dt < trip_start_dt:
+                return False, (
+                    f"Shifting would move **{d_str}** to **{new_dt}**, "
+                    f"which is before the trip start ({trip_start_str})."
+                ), []
+            if trip_end_dt and new_dt > trip_end_dt:
+                return False, (
+                    f"Shifting would move **{d_str}** to **{new_dt}**, "
+                    f"which is past the trip end ({trip_end_str})."
+                ), []
+            pairs.append((d_str, str(new_dt)))
 
-        return True, ""
+        if dry_run:
+            return True, "", pairs
+
+        # Apply — process in reverse when moving forward to avoid transient collisions
+        ordered = pairs if delta < 0 else list(reversed(pairs))
+        for old_d, new_d in ordered:
+            new_day_num = (_date.fromisoformat(new_d) - trip_start_dt).days + 1
+            rows = [r for r in resp.data if r["date"] == old_d]
+            for row in rows:
+                _sb().table("itinerary").update({
+                    "date":       new_d,
+                    "day_number": new_day_num,
+                }).eq("entry_id", str(row["entry_id"])).execute()
+
+        return True, "", pairs
     except Exception as exc:
-        return False, str(exc)
+        return False, str(exc), []
 
 
 def shift_itinerary_dates(
