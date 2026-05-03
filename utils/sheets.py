@@ -635,6 +635,32 @@ def add_expense(
         return None
 
 
+def update_expense(
+    expense_id: str,
+    entry_date,
+    category: str,
+    title: str,
+    amount: float,
+    currency: str,
+    description: str = "",
+    links: str = "",
+) -> bool:
+    """Update an existing expense row in Supabase."""
+    try:
+        _sb().table("expenses").update({
+            "date":        str(entry_date),
+            "category":    category,
+            "title":       title,
+            "amount":      amount,
+            "currency":    currency,
+            "description": description,
+            "links":       links,
+        }).eq("expense_id", expense_id).execute()
+        return True
+    except Exception:
+        return False
+
+
 def delete_expense(expense_id: str) -> bool:
     """WRITE to Supabase + Google Sheets."""
     try:
@@ -795,9 +821,42 @@ def toggle_equipment_item(item_id: str, checked: bool) -> bool:
         return False
 
 
+def update_equipment_item(item_id: str, description: str) -> bool:
+    """Rename an equipment item."""
+    try:
+        _sb().table("equipment").update({"description": description}).eq("item_id", item_id).execute()
+        return True
+    except Exception:
+        return False
+
+
 def delete_equipment_item(item_id: str) -> bool:
     try:
         _sb().table("equipment").delete().eq("item_id", item_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def update_task(
+    task_id: str,
+    description: str,
+    assigned_to: str,
+    priority: str = "Normal",
+    links: str = "",
+    notes: str = "",
+    due_date: str = "",
+) -> bool:
+    """Update all editable fields of a task."""
+    try:
+        _sb().table("tasks").update({
+            "description": description,
+            "assigned_to": assigned_to,
+            "priority":    priority,
+            "links":       links,
+            "notes":       notes,
+            "due_date":    due_date or None,
+        }).eq("task_id", task_id).execute()
         return True
     except Exception:
         return False

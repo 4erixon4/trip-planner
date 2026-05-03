@@ -3,7 +3,10 @@
 import streamlit as st
 import pandas as pd
 
-from utils.sheets import get_equipment, add_equipment_item, toggle_equipment_item, delete_equipment_item
+from utils.sheets import (
+    get_equipment, add_equipment_item,
+    toggle_equipment_item, delete_equipment_item, update_equipment_item,
+)
 from utils.config import cfg
 from views._shared import trip_picker
 
@@ -33,46 +36,63 @@ def _owner_tab(trip_id: str, owner: str) -> None:
         done_df   = pd.DataFrame()
 
     def _item_row(row, is_checked: bool) -> None:
-        item_id = str(row["item_id"])
-        desc    = str(row.get("description", "")).strip()
+        item_id  = str(row["item_id"])
+        desc     = str(row.get("description", "")).strip()
+        edit_key = f"edit_eq_{item_id}"
 
         with st.container(border=True):
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                horizontal_alignment="distribute",
-            ):
+            if not is_checked and st.session_state.get(edit_key, False):
+                # ── Inline rename form ─────────────────────────────────────
+                new_desc = st.text_input("Item name", value=desc, key=f"eq_edit_txt_{item_id}")
+                col_s, col_c = st.columns(2)
+                with col_s:
+                    if st.button("Save", icon=":material/save:", type="primary",
+                                 key=f"eq_edit_save_{item_id}", use_container_width=True):
+                        if new_desc.strip():
+                            if update_equipment_item(item_id, new_desc.strip()):
+                                st.session_state[edit_key] = False
+                                st.cache_data.clear()
+                                st.rerun()
+                with col_c:
+                    if st.button("Cancel", icon=":material/close:",
+                                 key=f"eq_edit_cancel_{item_id}", use_container_width=True):
+                        st.session_state[edit_key] = False
+                        st.rerun()
+            else:
+                # ── Normal view ────────────────────────────────────────────
+                with st.container(
+                    horizontal=True,
+                    vertical_alignment="center",
+                    horizontal_alignment="distribute",
+                ):
+                    if is_checked:
+                        st.markdown(f":gray[~~{desc}~~]")
+                    else:
+                        ticked = st.checkbox(desc, value=False, key=f"eq_chk_{item_id}")
+                        if ticked:
+                            toggle_equipment_item(item_id, True)
+                            st.cache_data.clear()
+                            st.rerun()
+
+                    with st.container(horizontal=True, vertical_alignment="center"):
+                        if not is_checked:
+                            if st.button("", icon=":material/edit:", type="tertiary",
+                                         key=f"eq_edit_{item_id}", help="Rename item"):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+                        if st.button("", icon=":material/delete:", type="tertiary",
+                                     key=f"eq_del_{item_id}", help="Remove item"):
+                            delete_equipment_item(item_id)
+                            st.cache_data.clear()
+                            st.rerun()
+
+                # Un-check button for already-checked items
                 if is_checked:
-                    st.markdown(f":gray[~~{desc}~~]")
-                else:
-                    ticked = st.checkbox(desc, value=False, key=f"eq_chk_{item_id}")
-                    if ticked:
-                        toggle_equipment_item(item_id, True)
+                    if st.button("Uncheck", icon=":material/undo:", type="tertiary",
+                                 key=f"eq_undo_{item_id}"):
+                        toggle_equipment_item(item_id, False)
                         st.cache_data.clear()
                         st.rerun()
-
-                if st.button(
-                    "",
-                    icon=":material/delete:",
-                    type="tertiary",
-                    key=f"eq_del_{item_id}",
-                    help="Remove item",
-                ):
-                    delete_equipment_item(item_id)
-                    st.cache_data.clear()
-                    st.rerun()
-
-            # Un-check button for already-checked items
-            if is_checked:
-                if st.button(
-                    "Uncheck",
-                    icon=":material/undo:",
-                    type="tertiary",
-                    key=f"eq_undo_{item_id}",
-                ):
-                    toggle_equipment_item(item_id, False)
-                    st.cache_data.clear()
-                    st.rerun()
 
     # Active items
     for _, row in active_df.iterrows():

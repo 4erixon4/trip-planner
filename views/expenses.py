@@ -7,7 +7,7 @@ import streamlit as st
 import altair as alt
 
 from utils.sheets import (
-    get_expenses, add_expense, delete_expense,
+    get_expenses, add_expense, delete_expense, update_expense,
     update_itinerary_entry,
     EXPENSE_CATEGORIES, EXPENSE_COLS,
 )
@@ -391,35 +391,94 @@ def render() -> None:
         st.info("No additional expenses yet.", icon=":material/info:")
         return
 
+    trip_start_dt = date.fromisoformat(str(trip_row["start_date"])) if trip_row.get("start_date") else None
+    trip_end_dt   = date.fromisoformat(str(trip_row["end_date"]))   if trip_row.get("end_date")   else None
+
     for exp_date, group in exp_df.groupby("date"):
         st.caption(f"**{exp_date}**")
         for _, exp in group.iterrows():
-            exp_id = str(exp.get("expense_id", ""))
-            amt    = _to_float(exp.get("amount", 0))
-            cur    = str(exp.get("currency", "")).strip()
-            cat    = str(exp.get("category", "")).strip()
-            title  = str(exp.get("title", "") or "").strip()
-            desc   = str(exp.get("description", "") or "").strip()
-            links  = str(exp.get("links", "") or "").strip()
+            exp_id   = str(exp.get("expense_id", ""))
+            amt      = _to_float(exp.get("amount", 0))
+            cur      = str(exp.get("currency", "")).strip()
+            cat      = str(exp.get("category", "")).strip()
+            title    = str(exp.get("title", "") or "").strip()
+            desc     = str(exp.get("description", "") or "").strip()
+            links    = str(exp.get("links", "") or "").strip()
+            edit_key = f"edit_exp_{exp_id}"
 
-            # Backfill safety net: if a legacy row only has description, use it as title
+            # Backfill safety net
             if not title:
                 title, desc = desc, ""
 
             with st.container(border=True):
-                st.write(f"**{title}**")
-                if desc:
-                    st.write(desc)
-                st.caption(f":material/label: {cat}")
-                with st.container(horizontal=True, horizontal_alignment="right",
-                                  vertical_alignment="center"):
-                    st.write(f"**{amt:,.2f} {cur}**")
-                    if st.button("", icon=":material/delete:", key=f"del_exp_{exp_id}",
-                                 type="tertiary", help="Delete expense"):
-                        if delete_expense(exp_id):
-                            st.cache_data.clear()
+                if st.session_state.get(edit_key, False):
+                    # ── Edit form ──────────────────────────────────────────
+                    st.caption("**Edit expense**")
+                    try:
+                        cur_date_val = date.fromisoformat(str(exp_date))
+                    except ValueError:
+                        cur_date_val = date.today()
+
+                    new_date = st.date_input("Date", value=cur_date_val,
+                                             min_value=trip_start_dt, max_value=trip_end_dt,
+                                             key=f"eexp_date_{exp_id}")
+                    cat_opts  = EXPENSE_CATEGORIES
+                    cat_idx   = cat_opts.index(cat) if cat in cat_opts else 0
+                    new_cat   = st.selectbox("Category", cat_opts, index=cat_idx,
+                                             key=f"eexp_cat_{exp_id}")
+                    new_title = st.text_input("Title", value=title, key=f"eexp_title_{exp_id}")
+                    new_desc  = st.text_area("Description (optional)", value=desc,
+                                             height=70, key=f"eexp_desc_{exp_id}")
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        new_amt = st.number_input("Amount", value=float(amt), min_value=0.0,
+                                                  step=1.0, format="%.2f", key=f"eexp_amt_{exp_id}")
+                    with c2:
+                        cur_idx  = CURRENCIES.index(cur) if cur in CURRENCIES else 0
+                        new_cur  = st.selectbox("Currency", CURRENCIES, index=cur_idx,
+                                                key=f"eexp_cur_{exp_id}")
+                    new_links = st.text_input("Links (optional)", value=links,
+                                              placeholder="Label | https://…",
+                                              key=f"eexp_links_{exp_id}")
+
+                    col_s, col_c = st.columns(2)
+                    with col_s:
+                        if st.button("Save", icon=":material/save:", type="primary",
+                                     key=f"eexp_save_{exp_id}", use_container_width=True):
+                            if new_title.strip() and new_amt > 0:
+                                if update_expense(exp_id, new_date, new_cat, new_title.strip(),
+                                                  new_amt, new_cur, new_desc.strip(),
+                                                  new_links.strip()):
+                                    st.session_state[edit_key] = False
+                                    st.cache_data.clear()
+                                    st.rerun()
+                            else:
+                                st.error("Title and a positive amount are required.")
+                    with col_c:
+                        if st.button("Cancel", icon=":material/close:",
+                                     key=f"eexp_cancel_{exp_id}", use_container_width=True):
+                            st.session_state[edit_key] = False
                             st.rerun()
-                if links:
-                    for raw in [l.strip() for l in links.split(",") if l.strip()]:
-                        label, url = parse_link(raw)
-                        st.link_button(label, url, icon=":material/link:", use_container_width=True)
+
+                else:
+                    # ── Normal view ────────────────────────────────────────
+                    st.write(f"**{title}**")
+                    if desc:
+                        st.write(desc)
+                    st.caption(f":material/label: {cat}")
+                    with st.container(horizontal=True, horizontal_alignment="right",
+                                      vertical_alignment="center"):
+                        st.write(f"**{amt:,.2f} {cur}**")
+                        if st.button("", icon=":material/edit:", key=f"edit_exp_{exp_id}",
+                                     type="tertiary", help="Edit expense"):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        if st.button("", icon=":material/delete:", key=f"del_exp_{exp_id}",
+                                     type="tertiary", help="Delete expense"):
+                            if delete_expense(exp_id):
+                                st.cache_data.clear()
+                                st.rerun()
+                    if links:
+                        for raw in [lnk.strip() for lnk in links.split(",") if lnk.strip()]:
+                            lbl, url = parse_link(raw)
+                            st.link_button(lbl, url, icon=":material/link:", use_container_width=True)

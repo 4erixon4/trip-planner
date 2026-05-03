@@ -3,7 +3,8 @@
 import streamlit as st
 import pandas as pd
 
-from utils.sheets import add_task, delete_task, mark_task_done
+from datetime import date as _date_cls
+from utils.sheets import add_task, delete_task, mark_task_done, update_task
 from utils.config import cfg
 from views._shared import (
     trip_picker, parse_link, cached_tasks,
@@ -110,50 +111,101 @@ def render() -> None:
     done_df   = tasks_df[tasks_df["done"]].copy()  if "done" in tasks_df.columns else pd.DataFrame()
 
     def _render_task_row(task, is_done: bool) -> None:
-        task_id  = str(task.get("task_id", ""))
-        desc     = str(task.get("description", "")).strip()
-        notes    = str(task.get("notes", "") or "").strip()
-        due_date = str(task.get("due_date", "") or "").strip()
-        assignee = str(task.get("assigned_to", "Unassigned")).strip()
-        priority = str(task.get("priority", "Normal")).strip() or "Normal"
-        links    = str(task.get("links", "") or "").strip()
+        task_id   = str(task.get("task_id", ""))
+        desc      = str(task.get("description", "")).strip()
+        notes     = str(task.get("notes", "") or "").strip()
+        due_date  = str(task.get("due_date", "") or "").strip()
+        assignee  = str(task.get("assigned_to", "Unassigned")).strip()
+        priority  = str(task.get("priority", "Normal")).strip() or "Normal"
+        links     = str(task.get("links", "") or "").strip()
+        edit_key  = f"edit_task_{task_id}"
+        is_editing = not is_done and st.session_state.get(edit_key, False)
 
         with st.container(border=True):
-            if is_done:
-                st.markdown(f":gray[~~{desc}~~]")
+            if is_editing:
+                # ── Edit form ──────────────────────────────────────────────
+                new_desc  = st.text_input("Task", value=desc, key=f"etask_desc_{task_id}")
+                new_notes = st.text_area("Notes", value=notes, key=f"etask_notes_{task_id}", height=70)
+
+                due_val = None
+                if due_date:
+                    try:
+                        due_val = _date_cls.fromisoformat(due_date)
+                    except ValueError:
+                        pass
+                new_due = st.date_input("Due date (optional)", value=due_val, key=f"etask_due_{task_id}")
+
+                assign_opts  = ["Unassigned"] + assignees
+                assign_idx   = assign_opts.index(assignee) if assignee in assign_opts else 0
+                new_assigned = st.selectbox("Assign to", assign_opts, index=assign_idx,
+                                            key=f"etask_assign_{task_id}")
+                prio_idx     = PRIORITIES.index(priority) if priority in PRIORITIES else 0
+                new_priority = st.selectbox("Priority", PRIORITIES, index=prio_idx,
+                                            key=f"etask_prio_{task_id}")
+                new_links    = st.text_input("Links (optional)", value=links,
+                                             placeholder="Label | https://example.com , …",
+                                             key=f"etask_links_{task_id}")
+
+                col_s, col_c = st.columns(2)
+                with col_s:
+                    if st.button("Save", icon=":material/save:", type="primary",
+                                 key=f"etask_save_{task_id}", use_container_width=True):
+                        if new_desc.strip():
+                            due_str = str(new_due) if new_due else ""
+                            if update_task(task_id, new_desc.strip(), new_assigned,
+                                           new_priority, new_links.strip(),
+                                           new_notes.strip(), due_str):
+                                st.session_state[edit_key] = False
+                                st.cache_data.clear()
+                                st.rerun()
+                with col_c:
+                    if st.button("Cancel", icon=":material/close:",
+                                 key=f"etask_cancel_{task_id}", use_container_width=True):
+                        st.session_state[edit_key] = False
+                        st.rerun()
+
             else:
-                checked = st.checkbox(
-                    _priority_label(desc, priority),
-                    key=f"task_chk_{task_id}",
-                )
-                if checked:
-                    mark_task_done(task_id)
-                    st.cache_data.clear()
-                    st.rerun()
+                # ── Normal view ────────────────────────────────────────────
+                if is_done:
+                    st.markdown(f":gray[~~{desc}~~]")
+                else:
+                    checked = st.checkbox(
+                        _priority_label(desc, priority),
+                        key=f"task_chk_{task_id}",
+                    )
+                    if checked:
+                        mark_task_done(task_id)
+                        st.cache_data.clear()
+                        st.rerun()
 
-            if notes and not is_done:
-                st.caption(notes)
-            if due_date and not is_done:
-                st.caption(f":material/event: {due_date}")
+                if notes and not is_done:
+                    st.caption(notes)
+                if due_date and not is_done:
+                    st.caption(f":material/event: {due_date}")
 
-            with st.container(horizontal=True, horizontal_alignment="right",
-                              vertical_alignment="center"):
-                if assignee and assignee != "Unassigned":
-                    label = ":gray[" + assignee + "]" if is_done else f":material/person: {assignee}"
-                    st.caption(label)
-                st.button(
-                    "",
-                    icon=":material/delete:",
-                    type="tertiary",
-                    key=f"task_del_{task_id}",
-                    help="Delete task",
-                    on_click=_delete_task_cb,
-                    args=(task_id,),
-                )
-            if links and not is_done:
-                for raw in [l.strip() for l in links.split(",") if l.strip()]:
-                    label, url = parse_link(raw)
-                    st.link_button(label, url, icon=":material/link:", use_container_width=True)
+                with st.container(horizontal=True, horizontal_alignment="right",
+                                  vertical_alignment="center"):
+                    if assignee and assignee != "Unassigned":
+                        label = ":gray[" + assignee + "]" if is_done else f":material/person: {assignee}"
+                        st.caption(label)
+                    if not is_done:
+                        if st.button("", icon=":material/edit:", type="tertiary",
+                                     key=f"task_edit_{task_id}", help="Edit task"):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                    st.button(
+                        "",
+                        icon=":material/delete:",
+                        type="tertiary",
+                        key=f"task_del_{task_id}",
+                        help="Delete task",
+                        on_click=_delete_task_cb,
+                        args=(task_id,),
+                    )
+                if links and not is_done:
+                    for raw in [lnk.strip() for lnk in links.split(",") if lnk.strip()]:
+                        lbl, url = parse_link(raw)
+                        st.link_button(lbl, url, icon=":material/link:", use_container_width=True)
 
     for _, task in active_df.iterrows():
         _render_task_row(task, is_done=False)
