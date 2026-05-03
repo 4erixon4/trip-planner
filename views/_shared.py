@@ -4,7 +4,7 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from utils.sheets import get_trips, get_itinerary, get_tasks
+from utils.sheets import get_trips, get_itinerary, get_tasks, get_bookings
 
 _DAY_TITLE_PREFIX = "daytitle_"
 
@@ -70,6 +70,11 @@ def cached_itinerary(trip_id: str, sheet_tab: str = "") -> pd.DataFrame:
 @st.cache_data(ttl=40, show_spinner=False)
 def cached_tasks(trip_id: str) -> pd.DataFrame:
     return get_tasks(trip_id)
+
+
+@st.cache_data(ttl=40, show_spinner=False)
+def cached_bookings(trip_id: str) -> pd.DataFrame:
+    return get_bookings(trip_id)
 
 
 def trip_day_number(trip_start: str, target_date: date) -> int:

@@ -97,6 +97,7 @@ from utils.sheets import (
     add_equipment_item,
     add_expense,
     add_task,
+    get_bookings,
     get_equipment,
     get_expenses,
     get_finding,
@@ -268,6 +269,22 @@ def _build_trip_context(trip_id: str) -> dict:
                 "currency":    str(e.get("currency", "") or ""),
             })
 
+    bookings: list[dict] = []
+    bk_df = get_bookings(trip_id)
+    if not bk_df.empty:
+        for _, b in bk_df.iterrows():
+            bookings.append({
+                "booking_id": str(b.get("booking_id", "") or ""),
+                "title":      str(b.get("title", "") or ""),
+                "type":       str(b.get("type", "") or ""),
+                "status":     str(b.get("status", "") or ""),
+                "check_in":   str(b.get("check_in", "") or ""),
+                "check_out":  str(b.get("check_out", "") or ""),
+                "amount":     str(b.get("amount", "") or ""),
+                "currency":   str(b.get("currency", "") or ""),
+                "location":   str(b.get("location", "") or ""),
+            })
+
     return {
         "trip": {
             "trip_id":    str(trip["trip_id"]),
@@ -282,6 +299,7 @@ def _build_trip_context(trip_id: str) -> dict:
         "tasks":           tasks,
         "equipment":       equipment,
         "expenses":        expenses,
+        "bookings":        bookings,
         "expense_categories": list(EXPENSE_CATEGORIES),
         "approved_emails": list(cfg.approved_emails),
     }
@@ -557,6 +575,14 @@ def _run_tasks(report_id: str, ctx: dict) -> None:
             "   sunscreen + swimwear for beach, adapter by destination country, etc.\n"
             "Strictly DO NOT duplicate items already in the existing 'tasks' or "
             "'equipment' lists in the context. Be concise and concrete.\n"
+            "CRITICAL: The context contains a 'bookings' list — these are bookings the "
+            "user has ALREADY MADE. Do NOT suggest tasks like 'Book hotel', "
+            "'Reserve flight', 'Book car rental', or 'Reserve restaurant' for any item "
+            "whose intent is already covered by an entry in 'bookings' (match by date "
+            "range, location, and type). Cancelled bookings (status='Cancelled') do "
+            "NOT count as already-booked. You MAY suggest follow-up tasks like "
+            "'Confirm hotel check-in time' or 'Print confirmation' on top of an "
+            "existing booking if genuinely useful.\n"
             "When suggesting equipment, you may set payload.owner to one of "
             "approved_emails if the item clearly belongs to a specific person; "
             "otherwise leave owner empty and the user will choose.\n"

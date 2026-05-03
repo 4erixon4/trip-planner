@@ -18,10 +18,39 @@ from utils.images import (
 from utils.gemini_helper import enrich_destination_info
 
 from views._shared import (
-    cached_trips, cached_itinerary, cached_tasks, trip_day_number, format_price,
+    cached_trips, cached_itinerary, cached_tasks, cached_bookings,
+    trip_day_number, format_price,
     parse_link, trip_picker, split_itinerary, sort_entries, DESTINATION_ICONS, draw_arrow,
     priority_badge,
 )
+
+
+def _booking_picker(trip_id: str, current_id: str, key: str) -> str:
+    """Render a selectbox of bookings for the trip; return the chosen booking_id ('' for none)."""
+    bookings_df = cached_bookings(trip_id)
+    if bookings_df.empty:
+        st.caption(":gray[No bookings for this trip yet — add some on the Bookings page.]")
+        return current_id
+    options: list[str] = [""]
+    labels: dict[str, str] = {"": "— no booking —"}
+    for _, b in bookings_df.iterrows():
+        bid = str(b["booking_id"])
+        title = str(b.get("title", "") or "(untitled)")
+        ci = str(b.get("check_in", "") or "")
+        co = str(b.get("check_out", "") or "")
+        date_part = (ci + (f" → {co}" if co and co != ci else "")) if ci else ""
+        labels[bid] = f"{title}" + (f"  ·  {date_part}" if date_part else "")
+        options.append(bid)
+    idx = options.index(current_id) if current_id in options else 0
+    chosen = st.selectbox(
+        "Linked booking",
+        options=options,
+        index=idx,
+        format_func=lambda x: labels.get(x, x),
+        key=key,
+        help="Connect this destination to a booking on the Bookings page.",
+    )
+    return chosen or ""
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "ILS", "AUD", "CAD", "Other"]
 ICON_KEYS   = list(DESTINATION_ICONS.keys())
@@ -160,6 +189,10 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
         links = st.text_input("Links", placeholder="Label | https://... , Label2 | https://...")
         extra = st.text_area("Additional info", height=70)
 
+        new_booking_id = _booking_picker(
+            str(trip_row["trip_id"]), "", key="add_booking_picker",
+        )
+
         img_prompt = st.text_input(
             "Illustration prompt (optional)",
             placeholder="e.g. driving from Zion to Page",
@@ -197,6 +230,7 @@ def _add_entry_form(trip_row, existing_df: pd.DataFrame) -> None:
                     time_end=time_end.strip(),
                     order=auto_order,
                     image_prompt=img_prompt.strip(),
+                    booking_id=new_booking_id,
                 )
                 if eid:
                     if img_prompt.strip():
@@ -488,6 +522,12 @@ def _edit_entry_form(trip_row, entry) -> None:
                                    placeholder="Label | https://... , Label2 | https://...")
         upd_extra = st.text_area("Additional info", value=str(entry.get("additional_info", "")), height=70)
 
+        upd_booking = _booking_picker(
+            str(trip_row["trip_id"]),
+            str(entry.get("booking_id", "") or ""),
+            key=f"edit_booking_{eid}",
+        )
+
         cur_img_url = str(entry.get("image_url", "") or "").strip()
         cur_img_prompt = str(entry.get("image_prompt", "") or "")
 
@@ -537,6 +577,7 @@ def _edit_entry_form(trip_row, entry) -> None:
                 time_end=upd_te.strip(),
                 order=int(upd_order),
                 image_prompt=new_prompt,
+                booking_id=upd_booking,
             ):
                 if regen and new_prompt:
                     with st.spinner("Generating illustration…"):

@@ -54,6 +54,7 @@ ITINERARY_COLS = [
     "time_end",         # HH:MM optional e.g. "16:00"
     "image_prompt",     # user-provided seed for Nano Banana illustration
     "image_url",        # public URL of the generated illustration in Supabase Storage
+    "booking_id",       # optional FK to bookings table
     "created_at",
 ]
 
@@ -83,6 +84,36 @@ TASK_COLS = [
     "entry_id",         # optional link to an itinerary entry
     "created_at",
 ]
+
+BOOKING_COLS = [
+    "booking_id",
+    "trip_id",
+    "title",
+    "type",              # Hotel / Hostel / Flight / Train / Car rental / Activity / Restaurant / Other
+    "status",            # Confirmed / Pending / Cancelled
+    "check_in",          # ISO date
+    "check_out",         # ISO date (optional — same-day bookings leave it null)
+    "amount",
+    "currency",
+    "location",          # short location label, e.g. "San Francisco"
+    "confirmation_code",
+    "url",
+    "description",
+    "created_at",
+]
+
+BOOKING_TYPES = [
+    "Hotel",
+    "Hostel",
+    "Flight",
+    "Train",
+    "Car rental",
+    "Activity",
+    "Restaurant",
+    "Other",
+]
+
+BOOKING_STATUSES = ["Confirmed", "Pending", "Cancelled"]
 
 EXPENSE_CATEGORIES = [
     "Food & Dining",
@@ -367,6 +398,9 @@ def get_itinerary(trip_row: pd.Series) -> pd.DataFrame:
             if "category" not in df.columns:
                 df["category"] = ""
             df["category"] = df["category"].fillna("").astype(str)
+            if "booking_id" not in df.columns:
+                df["booking_id"] = ""
+            df["booking_id"] = df["booking_id"].fillna("").astype(str)
             return df.sort_values("date", ignore_index=True)
         return pd.DataFrame(columns=ITINERARY_COLS)
     except Exception as exc:
@@ -392,6 +426,7 @@ def add_itinerary_entry(
     order: int = 10,
     image_prompt: str = "",
     image_url: str = "",
+    booking_id: str = "",
 ) -> str | None:
     """WRITE to Supabase + Google Sheets."""
     try:
@@ -419,6 +454,7 @@ def add_itinerary_entry(
             "time_end": time_end,
             "image_prompt": image_prompt,
             "image_url": image_url,
+            "booking_id": booking_id,
             "created_at": now,
         }).execute()
 
@@ -681,6 +717,126 @@ def delete_expense(expense_id: str) -> bool:
         return True
     except Exception as exc:
         st.error(f"Error deleting expense: {exc}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bookings CRUD (Supabase only — no Sheets sync needed for bookings)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_bookings(trip_id: str) -> pd.DataFrame:
+    """READ from Supabase. Sorted by check_in ascending."""
+    try:
+        resp = (
+            _sb().table("bookings")
+            .select("*")
+            .eq("trip_id", trip_id)
+            .execute()
+        )
+        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        if not df.empty and "check_in" in df.columns:
+            df = df.sort_values("check_in", na_position="last").reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_booking(booking_id: str) -> dict | None:
+    if not booking_id:
+        return None
+    try:
+        resp = (
+            _sb().table("bookings")
+            .select("*")
+            .eq("booking_id", booking_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def add_booking(
+    trip_id:           str,
+    title:             str,
+    btype:             str = "Hotel",
+    status:            str = "Confirmed",
+    check_in:          str = "",
+    check_out:         str = "",
+    amount:            float = 0.0,
+    currency:          str = "USD",
+    location:          str = "",
+    confirmation_code: str = "",
+    url:               str = "",
+    description:       str = "",
+) -> str | None:
+    try:
+        booking_id = f"bk_{uuid.uuid4().hex[:10]}"
+        now = datetime.now().isoformat(timespec="seconds")
+        _sb().table("bookings").insert({
+            "booking_id":        booking_id,
+            "trip_id":           trip_id,
+            "title":             title,
+            "type":              btype,
+            "status":            status,
+            "check_in":          check_in or None,
+            "check_out":         check_out or None,
+            "amount":            amount,
+            "currency":          currency,
+            "location":          location,
+            "confirmation_code": confirmation_code,
+            "url":               url,
+            "description":       description,
+            "created_at":        now,
+        }).execute()
+        return booking_id
+    except Exception as exc:
+        st.error(f"Error adding booking: {exc}")
+        return None
+
+
+def update_booking(
+    booking_id:        str,
+    title:             str,
+    btype:             str = "Hotel",
+    status:            str = "Confirmed",
+    check_in:          str = "",
+    check_out:         str = "",
+    amount:            float = 0.0,
+    currency:          str = "USD",
+    location:          str = "",
+    confirmation_code: str = "",
+    url:               str = "",
+    description:       str = "",
+) -> bool:
+    try:
+        _sb().table("bookings").update({
+            "title":             title,
+            "type":              btype,
+            "status":            status,
+            "check_in":          check_in or None,
+            "check_out":         check_out or None,
+            "amount":            amount,
+            "currency":          currency,
+            "location":          location,
+            "confirmation_code": confirmation_code,
+            "url":               url,
+            "description":       description,
+        }).eq("booking_id", booking_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def delete_booking(booking_id: str) -> bool:
+    try:
+        # Detach any itinerary entries linked to this booking before deleting
+        _sb().table("itinerary").update({"booking_id": ""}).eq("booking_id", booking_id).execute()
+        _sb().table("bookings").delete().eq("booking_id", booking_id).execute()
+        return True
+    except Exception:
         return False
 
 
